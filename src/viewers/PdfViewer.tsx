@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import { ListTree, Search, ChevronLeft, ChevronRight, Hand, MousePointer2, GripVertical } from "lucide-react";
+import { ListTree, Search, ChevronLeft, ChevronRight, GripVertical } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
 import { defaultSettings, type PdfSettings } from "@/components/PdfSettingsPanel";
@@ -8,8 +8,16 @@ import { PdfStatusBar, type DisplayMode } from "@/components/PdfStatusBar";
 import { PdfSearchBar } from "@/components/PdfSearchBar";
 import { PdfThumbnailPanel } from "@/components/PdfThumbnailPanel";
 import { PdfContextMenu } from "@/components/PdfContextMenu";
+import { BookmarkPanel } from "@/components/BookmarkPanel";
+import { HighlightPanel } from "@/components/HighlightPanel";
+import { SymbolPanel } from "@/components/SymbolPanel";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  addBookmark, addHighlight, addSymbolAnnotation,
+  getHighlights, getSymbolAnnotations,
+  type Highlight, type SymbolAnnotation,
+} from "@/lib/annotationStore";
+import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
@@ -36,21 +44,16 @@ async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: any):
 }
 
 async function mapPdfOutlineItems(
-  doc: pdfjsLib.PDFDocumentProxy,
-  outline: any[],
-  prefix = "toc",
+  doc: pdfjsLib.PDFDocumentProxy, outline: any[], prefix = "toc",
 ): Promise<PdfTocItem[]> {
   return Promise.all(
     outline.map(async (item, index) => {
       const id = `${prefix}-${index}`;
       const pageNumber = item.dest ? await resolvePdfDestination(doc, item.dest).catch(() => null) : null;
       return {
-        id,
-        label: item.title?.trim() || "Untitled section",
+        id, label: item.title?.trim() || "Untitled section",
         hint: pageNumber ? `Page ${pageNumber}` : undefined,
-        page: pageNumber,
-        dest: item.dest,
-        url: item.url ?? null,
+        page: pageNumber, dest: item.dest, url: item.url ?? null,
         children: item.items?.length ? await mapPdfOutlineItems(doc, item.items, id) : [],
       };
     }),
@@ -67,9 +70,7 @@ function createPdfLinkService(doc: pdfjsLib.PDFDocumentProxy, setPage: PageSette
   const goToPage = (target: number) => setPage(Math.max(1, Math.min(totalPages, target)));
   return {
     addLinkAttributes(link: HTMLAnchorElement, url: string, newWindow?: boolean) {
-      link.href = url;
-      link.target = newWindow ? "_blank" : "_self";
-      link.rel = "noopener noreferrer";
+      link.href = url; link.target = newWindow ? "_blank" : "_self"; link.rel = "noopener noreferrer";
     },
     eventBus: { dispatch: () => undefined },
     executeNamedAction(action: string) {
@@ -113,8 +114,7 @@ async function printPdf(pdfDoc: pdfjsLib.PDFDocumentProxy) {
     const page = await pdfDoc.getPage(i);
     const viewport = page.getViewport({ scale: 2 });
     const canvas = printWindow.document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    canvas.width = viewport.width; canvas.height = viewport.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) continue;
     await page.render({ canvasContext: ctx, viewport }).promise;
@@ -127,10 +127,7 @@ async function printPdf(pdfDoc: pdfjsLib.PDFDocumentProxy) {
 
 interface SearchResult { page: number; index: number; }
 
-async function searchPdf(
-  pdfDoc: pdfjsLib.PDFDocumentProxy,
-  query: string,
-): Promise<SearchResult[]> {
+async function searchPdf(pdfDoc: pdfjsLib.PDFDocumentProxy, query: string): Promise<SearchResult[]> {
   if (!query.trim()) return [];
   const results: SearchResult[] = [];
   const lowerQuery = query.toLowerCase();
@@ -151,10 +148,7 @@ async function searchPdf(
 
 /* ── Component ───────────────────────────────────────────────────── */
 
-interface PdfViewerProps {
-  file: FileEntry;
-  onBack: () => void;
-}
+interface PdfViewerProps { file: FileEntry; onBack: () => void; }
 
 export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -164,11 +158,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [totalPages, setTotalPages] = useState(0);
   const [zoom, setZoom] = useState(1.2);
   const [rotation, setRotation] = useState(0);
-  const [sidebarTab, setSidebarTab] = useState<"toc" | "thumbs" | null>(null);
+  const [sidebarTab, setSidebarTab] = useState<"toc" | "thumbs" | "bookmarks" | "highlights" | "symbols" | null>(null);
   const [tocItems, setTocItems] = useState<PdfTocItem[]>([]);
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
-  const [tool, setTool] = useState<"select" | "hand">("select");
 
   // Navigation history
   const [navHistory, setNavHistory] = useState<number[]>([1]);
@@ -179,6 +172,27 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [showSearch, setShowSearch] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [currentResultIdx, setCurrentResultIdx] = useState(0);
+
+  // Annotation state
+  const [highlightColor, setHighlightColor] = useState("rgb(255,235,59)");
+  const [activeSymbol, setActiveSymbol] = useState("⭐");
+  const [placingSymbol, setPlacingSymbol] = useState(false);
+
+  // For re-rendering overlay annotations
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [symbolAnnotations, setSymbolAnnotations] = useState<SymbolAnnotation[]>([]);
+  const [annotationVersion, setAnnotationVersion] = useState(0);
+
+  const reloadAnnotations = useCallback(async () => {
+    const [hl, sa] = await Promise.all([
+      getHighlights(file.id),
+      getSymbolAnnotations(file.id),
+    ]);
+    setHighlights(hl);
+    setSymbolAnnotations(sa);
+  }, [file.id]);
+
+  useEffect(() => { reloadAnnotations(); }, [reloadAnnotations, annotationVersion]);
 
   /* Load PDF */
   useEffect(() => {
@@ -196,15 +210,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     return () => { cancelled = true; loadingTask.destroy(); };
   }, [file.data]);
 
-  /* Navigation history tracking */
+  /* Navigation history */
   const navigateToPage = useCallback((p: number) => {
     setPage(p);
     if (!isNavJump.current) {
-      setNavHistory((h) => {
-        const newH = h.slice(0, navIndex + 1);
-        newH.push(p);
-        return newH;
-      });
+      setNavHistory((h) => { const newH = h.slice(0, navIndex + 1); newH.push(p); return newH; });
       setNavIndex((i) => i + 1);
     }
     isNavJump.current = false;
@@ -254,9 +264,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setZoom(Math.max(0.4, Math.min(3, availableWidth / baseViewport.width)));
   }, [page, pdf]);
 
-  useEffect(() => {
-    if (settings.autoFitWidth) handleFitWidth();
-  }, [settings.autoFitWidth, handleFitWidth]);
+  useEffect(() => { if (settings.autoFitWidth) handleFitWidth(); }, [settings.autoFitWidth, handleFitWidth]);
 
   /* Search */
   const handleSearch = useCallback(async (query: string) => {
@@ -286,6 +294,35 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     handleSearch(text);
   }, [handleSearch]);
 
+  /* Highlight from context menu */
+  const handleHighlightText = useCallback(async (text: string, rects: Highlight["rects"]) => {
+    await addHighlight(file.id, page, highlightColor, text, rects);
+    toast.success("Text highlighted");
+    setAnnotationVersion((v) => v + 1);
+  }, [file.id, page, highlightColor]);
+
+  /* Bookmark from context menu */
+  const handleBookmarkPage = useCallback(async () => {
+    await addBookmark(file.id, page);
+    toast.success(`Bookmarked page ${page}`);
+    setAnnotationVersion((v) => v + 1);
+  }, [file.id, page]);
+
+  /* Symbol placement click handler */
+  const handleViewportClick = useCallback(async (e: React.MouseEvent) => {
+    if (!placingSymbol) return;
+    const target = (e.target as HTMLElement).closest(".pdf-page") as HTMLElement | null;
+    if (!target) return;
+    const pageNum = Number(target.dataset.pageNumber);
+    if (!pageNum) return;
+    const rect = target.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    await addSymbolAnnotation(file.id, pageNum, activeSymbol, x, y);
+    toast.success("Symbol placed");
+    setAnnotationVersion((v) => v + 1);
+  }, [placingSymbol, file.id, activeSymbol]);
+
   /* Render pages */
   useEffect(() => {
     if (!pdf || !containerRef.current) return;
@@ -297,7 +334,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       const outputScale = window.devicePixelRatio || 1;
 
       const wrapper = document.createElement("div");
-      wrapper.className = "pdf-page";
+      wrapper.className = "pdf-page relative";
       wrapper.style.width = `${viewport.width}px`;
       wrapper.style.height = `${viewport.height}px`;
       wrapper.style.setProperty("--scale-factor", `${viewport.scale}`);
@@ -312,7 +349,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       canvas.height = Math.floor(viewport.height * outputScale);
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
-
       const ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) return;
       wrapper.appendChild(canvas);
@@ -333,6 +369,45 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         wrapper.appendChild(annotationDiv);
       }
 
+      /* Highlight overlays */
+      const pageHighlights = highlights.filter((h) => h.page === pageNum);
+      if (pageHighlights.length > 0) {
+        const hlOverlay = document.createElement("div");
+        hlOverlay.className = "absolute inset-0 pointer-events-none z-[4]";
+        pageHighlights.forEach((hl) => {
+          hl.rects.forEach((r) => {
+            const el = document.createElement("div");
+            el.className = "absolute rounded-sm";
+            el.style.left = `${r.x * 100}%`;
+            el.style.top = `${r.y * 100}%`;
+            el.style.width = `${r.w * 100}%`;
+            el.style.height = `${r.h * 100}%`;
+            el.style.backgroundColor = hl.color;
+            el.style.opacity = "0.35";
+            el.style.mixBlendMode = "multiply";
+            hlOverlay.appendChild(el);
+          });
+        });
+        wrapper.appendChild(hlOverlay);
+      }
+
+      /* Symbol overlays */
+      const pageSymbols = symbolAnnotations.filter((s) => s.page === pageNum);
+      if (pageSymbols.length > 0) {
+        const symOverlay = document.createElement("div");
+        symOverlay.className = "absolute inset-0 pointer-events-none z-[5]";
+        pageSymbols.forEach((s) => {
+          const el = document.createElement("div");
+          el.className = "absolute text-lg";
+          el.style.left = `${s.x * 100}%`;
+          el.style.top = `${s.y * 100}%`;
+          el.style.transform = "translate(-50%, -50%)";
+          el.textContent = s.symbol;
+          symOverlay.appendChild(el);
+        });
+        wrapper.appendChild(symOverlay);
+      }
+
       container.appendChild(wrapper);
       if (cancelled) return;
 
@@ -351,11 +426,8 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           const textContent = await pdfPage.getTextContent();
           if (cancelled) return;
           const textLayerTask = (pdfjsLib as any).renderTextLayer({
-            container: textDiv,
-            textContentSource: textContent,
-            textContentItemsStr: [],
-            textDivs: [],
-            viewport,
+            container: textDiv, textContentSource: textContent,
+            textContentItemsStr: [], textDivs: [], viewport,
           });
           await textLayerTask?.promise;
         }
@@ -371,8 +443,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
             return;
           }
           const annotationLayer = new (pdfjsLib as any).AnnotationLayer({
-            div: annotationDiv,
-            page: pdfPage,
+            div: annotationDiv, page: pdfPage,
             viewport: viewport.clone({ dontFlip: true }),
           });
           await annotationLayer.render({
@@ -390,47 +461,30 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       container.replaceChildren();
 
       if (displayMode === "continuous") {
-        // Render all pages
         for (let i = 1; i <= totalPages; i++) {
           if (cancelled) return;
           await renderPage(i, container);
         }
       } else if (displayMode === "double" || displayMode === "facing") {
-        // Render current page and next page side by side
         const row = document.createElement("div");
         row.className = "flex gap-4 items-start";
         container.appendChild(row);
-
-        const startPage = displayMode === "facing"
-          ? (page % 2 === 0 ? page - 1 : page)
-          : page;
-        
+        const startPage = displayMode === "facing" ? (page % 2 === 0 ? page - 1 : page) : page;
         await renderPage(Math.max(1, startPage), row);
-        if (startPage + 1 <= totalPages) {
-          await renderPage(startPage + 1, row);
-        }
+        if (startPage + 1 <= totalPages) await renderPage(startPage + 1, row);
       } else {
-        // Single page
         await renderPage(page, container);
       }
     };
 
     render().catch((error) => { if (!cancelled) console.error("Failed to render PDF page", error); });
-
-    return () => {
-      cancelled = true;
-      containerRef.current?.replaceChildren();
-    };
-  }, [page, pdf, totalPages, zoom, rotation, settings, displayMode]);
+    return () => { cancelled = true; containerRef.current?.replaceChildren(); };
+  }, [page, pdf, totalPages, zoom, rotation, settings, displayMode, highlights, symbolAnnotations]);
 
   /* Keyboard nav */
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
-        e.preventDefault();
-        setShowSearch(true);
-        return;
-      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
       if (e.key === "ArrowRight" || e.key === "ArrowDown") {
         const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
         setPage((p) => Math.min(totalPages, p + step));
@@ -455,20 +509,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     return () => document.removeEventListener("wheel", handleWheel);
   }, []);
 
-  /* Print */
   const handlePrint = useCallback(() => { if (pdf) printPdf(pdf); }, [pdf]);
   const handleRotate = useCallback(() => { setRotation((r) => (r + 90) % 360); }, []);
 
-  /* Scroll class */
   const scrollClass = settings.scrollDirection === "horizontal"
     ? "flex flex-row items-center overflow-x-auto overflow-y-hidden"
     : "flex flex-1 flex-col items-center overflow-auto";
 
-  const cursorClass = tool === "hand" ? "cursor-grab active:cursor-grabbing" : "";
-
   return (
     <div className="flex h-screen flex-col bg-background">
-      {/* Top Command Bar */}
       <ViewerToolbar
         title={file.name}
         onBack={onBack}
@@ -491,8 +540,14 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         onSettingsChange={setSettings}
         onPrint={handlePrint}
         onRotatePage={handleRotate}
+        onToggleBookmarks={() => setSidebarTab((t) => t === "bookmarks" ? null : "bookmarks")}
+        onToggleHighlights={() => setSidebarTab((t) => t === "highlights" ? null : "highlights")}
+        onToggleSymbols={() => setSidebarTab((t) => t === "symbols" ? null : "symbols")}
+        bookmarksOpen={sidebarTab === "bookmarks"}
+        highlightsOpen={sidebarTab === "highlights"}
+        symbolsOpen={sidebarTab === "symbols"}
       >
-        {/* Nav history back/forward */}
+        {/* Nav history */}
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={navBack} disabled={navIndex <= 0} title="Previous view">
           <ChevronLeft className="h-4 w-4" />
         </Button>
@@ -502,38 +557,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
         <div className="w-px h-5 bg-border mx-1" />
 
-        {/* Tool toggle */}
-        <Button
-          variant={tool === "select" ? "secondary" : "ghost"}
-          size="icon"
-          className="h-8 w-8"
-          onClick={() => setTool("select")}
-          title="Selection tool"
-        >
-          <MousePointer2 className="h-4 w-4" />
-        </Button>
-        <Button
-          variant={tool === "hand" ? "secondary" : "ghost"}
-          size="icon"
-          className="h-8 w-8"
-          onClick={() => setTool("hand")}
-          title="Hand tool"
-        >
-          <Hand className="h-4 w-4" />
-        </Button>
-
-        <div className="w-px h-5 bg-border mx-1" />
-
-        {/* Search */}
         <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setShowSearch((o) => !o)} title="Find (Ctrl+F)">
           <Search className="h-4 w-4" />
         </Button>
-
-        {/* Sidebar toggles */}
         <Button
           variant={sidebarTab === "toc" ? "secondary" : "ghost"}
-          size="icon"
-          className="h-8 w-8"
+          size="icon" className="h-8 w-8"
           onClick={() => setSidebarTab((t) => t === "toc" ? null : "toc")}
           title="Table of contents"
         >
@@ -541,8 +570,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         </Button>
         <Button
           variant={sidebarTab === "thumbs" ? "secondary" : "ghost"}
-          size="icon"
-          className="h-8 w-8"
+          size="icon" className="h-8 w-8"
           onClick={() => setSidebarTab((t) => t === "thumbs" ? null : "thumbs")}
           title="Page thumbnails"
         >
@@ -550,17 +578,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         </Button>
       </ViewerToolbar>
 
-      {/* Main area */}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         {/* Left Sidebar */}
         {sidebarTab === "toc" && (
           <DocumentTocSidebar
-            title="PDF contents"
-            items={tocItems}
-            isOpen={true}
-            activeId={activeTocId}
-            onClose={() => setSidebarTab(null)}
-            onSelect={handleTocSelect}
+            title="PDF contents" items={tocItems} isOpen={true}
+            activeId={activeTocId} onClose={() => setSidebarTab(null)} onSelect={handleTocSelect}
           />
         )}
         {sidebarTab === "thumbs" && (
@@ -571,23 +594,49 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
                 <span className="text-xs">✕</span>
               </Button>
             </div>
-            <PdfThumbnailPanel
-              pdf={pdf}
-              currentPage={page}
+            <PdfThumbnailPanel pdf={pdf} currentPage={page} onPageSelect={(p) => navigateToPage(p)} isOpen={true} />
+          </aside>
+        )}
+        {sidebarTab === "bookmarks" && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-56 max-w-[85vw] flex-col border-r border-border glass-surface md:relative md:max-w-none md:shrink-0">
+            <BookmarkPanel fileId={file.id} currentPage={page} onPageSelect={(p) => navigateToPage(p)} />
+          </aside>
+        )}
+        {sidebarTab === "highlights" && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-56 max-w-[85vw] flex-col border-r border-border glass-surface md:relative md:max-w-none md:shrink-0">
+            <HighlightPanel
+              fileId={file.id} currentPage={page}
               onPageSelect={(p) => navigateToPage(p)}
-              isOpen={true}
+              activeColor={highlightColor} onColorChange={setHighlightColor}
+            />
+          </aside>
+        )}
+        {sidebarTab === "symbols" && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-56 max-w-[85vw] flex-col border-r border-border glass-surface md:relative md:max-w-none md:shrink-0">
+            <SymbolPanel
+              fileId={file.id} currentPage={page}
+              onPageSelect={(p) => navigateToPage(p)}
+              activeSymbol={activeSymbol} onSymbolChange={setActiveSymbol}
+              placingSymbol={placingSymbol}
+              onTogglePlacing={() => setPlacingSymbol((p) => !p)}
             />
           </aside>
         )}
 
-        {/* Canvas viewport */}
-        <div ref={viewportRef} className={`relative flex-1 ${scrollClass} ${cursorClass} p-4 md:p-8`}>
+        {/* Canvas */}
+        <div
+          ref={viewportRef}
+          className={`relative flex-1 ${scrollClass} ${placingSymbol ? "cursor-crosshair" : ""} p-4 md:p-8`}
+          onClick={handleViewportClick}
+        >
           <div ref={containerRef} className={`shrink-0 ${displayMode === "continuous" ? "space-y-4" : ""}`} />
-
-          {/* Floating context menu */}
-          <PdfContextMenu containerRef={viewportRef} onSearchText={handleSearchFromContext} />
-
-          {/* Search bar */}
+          <PdfContextMenu
+            containerRef={viewportRef}
+            onSearchText={handleSearchFromContext}
+            onHighlightText={handleHighlightText}
+            onBookmarkPage={handleBookmarkPage}
+            highlightColor={highlightColor}
+          />
           <PdfSearchBar
             isOpen={showSearch}
             onClose={() => { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); }}
@@ -600,12 +649,9 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         </div>
       </div>
 
-      {/* Bottom Status Bar */}
       <PdfStatusBar
-        currentPage={page}
-        totalPages={totalPages}
-        displayMode={displayMode}
-        onDisplayModeChange={setDisplayMode}
+        currentPage={page} totalPages={totalPages}
+        displayMode={displayMode} onDisplayModeChange={setDisplayMode}
         zoom={zoom}
       />
     </div>

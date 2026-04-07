@@ -1,19 +1,25 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Copy, Highlighter, Search } from "lucide-react";
+import { Copy, Highlighter, Search, Bookmark } from "lucide-react";
 import { toast } from "sonner";
 
 interface PdfContextMenuProps {
   containerRef: React.RefObject<HTMLDivElement>;
   onSearchText?: (text: string) => void;
+  onHighlightText?: (text: string, rects: { x: number; y: number; w: number; h: number }[]) => void;
+  onBookmarkPage?: () => void;
+  highlightColor?: string;
 }
 
 interface MenuPosition {
   x: number;
   y: number;
   text: string;
+  rects: { x: number; y: number; w: number; h: number }[];
 }
 
-export function PdfContextMenu({ containerRef, onSearchText }: PdfContextMenuProps) {
+export function PdfContextMenu({
+  containerRef, onSearchText, onHighlightText, onBookmarkPage, highlightColor,
+}: PdfContextMenuProps) {
   const [menu, setMenu] = useState<MenuPosition | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -29,10 +35,29 @@ export function PdfContextMenu({ containerRef, onSearchText }: PdfContextMenuPro
     const rect = range.getBoundingClientRect();
     const containerRect = containerRef.current.getBoundingClientRect();
 
+    // Collect rects for highlight storage
+    const clientRects = range.getClientRects();
+    const pageEl = range.startContainer.parentElement?.closest(".pdf-page");
+    const pageRect = pageEl?.getBoundingClientRect();
+    const rects: { x: number; y: number; w: number; h: number }[] = [];
+
+    if (pageRect) {
+      for (let i = 0; i < clientRects.length; i++) {
+        const r = clientRects[i];
+        rects.push({
+          x: (r.left - pageRect.left) / pageRect.width,
+          y: (r.top - pageRect.top) / pageRect.height,
+          w: r.width / pageRect.width,
+          h: r.height / pageRect.height,
+        });
+      }
+    }
+
     setMenu({
       x: rect.left + rect.width / 2 - containerRect.left,
       y: rect.top - containerRect.top - 8,
       text,
+      rects,
     });
   }, [containerRef]);
 
@@ -65,6 +90,17 @@ export function PdfContextMenu({ containerRef, onSearchText }: PdfContextMenuPro
     setMenu(null);
   }, [menu, onSearchText]);
 
+  const handleHighlight = useCallback(() => {
+    if (!menu) return;
+    onHighlightText?.(menu.text, menu.rects);
+    setMenu(null);
+  }, [menu, onHighlightText]);
+
+  const handleBookmark = useCallback(() => {
+    onBookmarkPage?.();
+    setMenu(null);
+  }, [onBookmarkPage]);
+
   if (!menu) return null;
 
   return (
@@ -84,16 +120,23 @@ export function PdfContextMenu({ containerRef, onSearchText }: PdfContextMenuPro
         <Copy className="h-3 w-3" /> Copy
       </button>
       <button
+        onClick={handleHighlight}
+        className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary transition-colors"
+      >
+        <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: highlightColor || "rgb(255,235,59)" }} />
+        Highlight
+      </button>
+      <button
         onClick={handleSearch}
         className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary transition-colors"
       >
         <Search className="h-3 w-3" /> Search
       </button>
       <button
+        onClick={handleBookmark}
         className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary transition-colors"
-        onClick={() => { toast.info("Highlighting coming soon"); setMenu(null); }}
       >
-        <Highlighter className="h-3 w-3" /> Highlight
+        <Bookmark className="h-3 w-3" /> Bookmark
       </button>
     </div>
   );
