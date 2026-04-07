@@ -299,8 +299,8 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           <div className="absolute inset-0 flex items-center justify-center bg-background/95 px-6 text-center">
             <p className="text-sm text-muted-foreground">{error}</p>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

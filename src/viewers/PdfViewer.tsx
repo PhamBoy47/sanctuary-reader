@@ -17,7 +17,7 @@ interface PdfTocItem extends TocItem {
 
 type PageSetter = Dispatch<SetStateAction<number>>;
 
-async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: unknown): Promise<number | null> {
+async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: any): Promise<number | null> {
   if (!dest) {
     return null;
   }
@@ -35,7 +35,7 @@ async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: unkno
   }
 
   if (target && typeof target === "object") {
-    return (await doc.getPageIndex(target as pdfjsLib.RefProxy)) + 1;
+    return (await doc.getPageIndex(target)) + 1;
   }
 
   return null;
@@ -43,7 +43,7 @@ async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: unkno
 
 async function mapPdfOutlineItems(
   doc: pdfjsLib.PDFDocumentProxy,
-  outline: pdfjsLib.OutlineNode[],
+  outline: any[],
   prefix = "toc",
 ): Promise<PdfTocItem[]> {
   return Promise.all(
