@@ -11,42 +11,111 @@ interface PdfViewerProps {
 }
 
 export function PdfViewer({ file, onBack }: PdfViewerProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [zoom, setZoom] = useState(1.2);
-  const [rendering, setRendering] = useState(false);
 
   useEffect(() => {
-    const loadPdf = async () => {
-      const data = new Uint8Array(file.data);
-      const doc = await pdfjsLib.getDocument({ data }).promise;
+    const data = new Uint8Array(file.data);
+    pdfjsLib.getDocument({ data }).promise.then((doc) => {
       setPdf(doc);
       setTotalPages(doc.numPages);
-    };
-    loadPdf();
+    });
   }, [file.data]);
 
-  const renderPage = useCallback(async () => {
-    if (!pdf || !canvasRef.current || rendering) return;
-    setRendering(true);
-    try {
+  useEffect(() => {
+    if (!pdf || !containerRef.current) return;
+    let cancelled = false;
+
+    const render = async () => {
+      const container = containerRef.current;
+      if (!container) return;
+
       const p = await pdf.getPage(page);
       const viewport = p.getViewport({ scale: zoom });
-      const canvas = canvasRef.current;
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext("2d")!;
-      await p.render({ canvasContext: ctx, viewport }).promise;
-    } finally {
-      setRendering(false);
-    }
-  }, [pdf, page, zoom, rendering]);
 
-  useEffect(() => {
-    renderPage();
+      // Clear previous
+      container.innerHTML = "";
+
+      // Wrapper
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+      wrapper.style.width = `${viewport.width}px`;
+      wrapper.style.height = `${viewport.height}px`;
+
+      // Canvas
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width * 2;
+      canvas.height = viewport.height * 2;
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
+      const ctx = canvas.getContext("2d")!;
+      ctx.scale(2, 2);
+
+      wrapper.appendChild(canvas);
+
+      // Text layer
+      const textDiv = document.createElement("div");
+      textDiv.className = "pdf-text-layer";
+      textDiv.style.width = `${viewport.width}px`;
+      textDiv.style.height = `${viewport.height}px`;
+      wrapper.appendChild(textDiv);
+
+      container.appendChild(wrapper);
+
+      if (cancelled) return;
+
+      await p.render({ canvasContext: ctx, viewport }).promise;
+
+      // Render text layer for selection
+      const textContent = await p.getTextContent();
+      textDiv.innerHTML = "";
+      for (const item of textContent.items) {
+        if (!("str" in item) || !item.str) continue;
+        const tx = pdfjsLib.Util.transform(
+          viewport.transform,
+          (item as any).transform
+        );
+        const span = document.createElement("span");
+        span.textContent = item.str;
+        span.style.left = `${tx[4]}px`;
+        span.style.top = `${tx[5]}px`;
+        span.style.fontSize = `${Math.abs(tx[0])}px`;
+        span.style.fontFamily = (item as any).fontName || "sans-serif";
+        textDiv.appendChild(span);
+      }
+    };
+
+    render();
+    return () => { cancelled = true; };
   }, [pdf, page, zoom]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        setPage((p) => Math.min(totalPages, p + 1));
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        setPage((p) => Math.max(1, p - 1));
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [totalPages]);
+
+  // Ctrl+scroll zoom
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.4, Math.min(3, z - e.deltaY * 0.002)));
+      }
+    };
+    document.addEventListener("wheel", handleWheel, { passive: false });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, []);
 
   return (
     <div className="flex flex-col h-screen bg-background">
@@ -63,11 +132,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         onFitWidth={() => setZoom(1.2)}
       />
       <div className="flex-1 overflow-auto flex justify-center p-8">
-        <canvas
-          ref={canvasRef}
-          className="shadow-2xl rounded-sm"
-          style={{ maxWidth: "100%" }}
-        />
+        <div ref={containerRef} className="shadow-2xl rounded-sm" />
       </div>
     </div>
   );

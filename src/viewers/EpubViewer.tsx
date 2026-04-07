@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import ePub from "epubjs";
-import type Book from "epubjs/types/book";
-import type Rendition from "epubjs/types/rendition";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
 import { Button } from "@/components/ui/button";
-import { Type, Sun, Moon, Minus, Plus } from "lucide-react";
+import { Type, Sun, Moon, Minus, Plus, ChevronLeft, ChevronRight } from "lucide-react";
 import type { FileEntry } from "@/lib/fileStore";
 
 interface EpubViewerProps {
@@ -22,23 +20,29 @@ const themes: Record<ThemeMode, { bg: string; fg: string }> = {
 
 export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const viewerRef = useRef<HTMLDivElement>(null);
-  const bookRef = useRef<Book | null>(null);
-  const renditionRef = useRef<Rendition | null>(null);
+  const renditionRef = useRef<any>(null);
+  const bookRef = useRef<any>(null);
   const [fontSize, setFontSize] = useState(100);
   const [theme, setTheme] = useState<ThemeMode>("dark");
-  const [currentPage, setCurrentPage] = useState(1);
   const [showSettings, setShowSettings] = useState(false);
+  const [atStart, setAtStart] = useState(true);
+  const [atEnd, setAtEnd] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     if (!viewerRef.current) return;
+    const el = viewerRef.current;
 
-    const book = ePub(file.data);
+    // epubjs expects ArrayBuffer
+    const arrayBuf = file.data instanceof ArrayBuffer ? file.data : (file.data as any);
+    const book = ePub(arrayBuf);
     bookRef.current = book;
 
-    const rendition = book.renderTo(viewerRef.current, {
+    const rendition = book.renderTo(el, {
       width: "100%",
       height: "100%",
       spread: "none",
+      flow: "paginated",
     });
 
     renditionRef.current = rendition;
@@ -46,64 +50,90 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     // Register themes
     Object.entries(themes).forEach(([name, t]) => {
       rendition.themes.register(name, {
-        body: {
-          background: t.bg + " !important",
-          color: t.fg + " !important",
-          "font-family": "'Space Grotesk', sans-serif !important",
+        "body": {
+          "background": `${t.bg} !important`,
+          "color": `${t.fg} !important`,
+          "font-family": "'Space Grotesk', system-ui, sans-serif !important",
+          "line-height": "1.7 !important",
+          "padding": "0 20px !important",
+        },
+        "p": {
+          "color": `${t.fg} !important`,
+        },
+        "h1, h2, h3, h4, h5, h6": {
+          "color": `${t.fg} !important`,
+        },
+        "a": {
+          "color": `${t.fg} !important`,
         },
       });
     });
 
     rendition.themes.select(theme);
     rendition.themes.fontSize(`${fontSize}%`);
-    rendition.display();
 
-    rendition.on("relocated", (location: any) => {
-      if (location?.start?.displayed?.page) {
-        setCurrentPage(location.start.displayed.page);
-      }
+    rendition.display().then(() => {
+      setReady(true);
     });
 
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") rendition.next();
-      if (e.key === "ArrowLeft") rendition.prev();
-    };
-    document.addEventListener("keydown", handleKey);
+    rendition.on("relocated", (location: any) => {
+      setAtStart(location?.atStart ?? false);
+      setAtEnd(location?.atEnd ?? false);
+    });
 
     return () => {
-      document.removeEventListener("keydown", handleKey);
       book.destroy();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.data]);
 
   useEffect(() => {
-    if (renditionRef.current) {
+    if (renditionRef.current && ready) {
       renditionRef.current.themes.select(theme);
     }
-  }, [theme]);
+  }, [theme, ready]);
 
   useEffect(() => {
-    if (renditionRef.current) {
+    if (renditionRef.current && ready) {
       renditionRef.current.themes.fontSize(`${fontSize}%`);
     }
-  }, [fontSize]);
+  }, [fontSize, ready]);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowRight") renditionRef.current?.next();
+      if (e.key === "ArrowLeft") renditionRef.current?.prev();
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, []);
 
   const nextTheme = () => {
     const order: ThemeMode[] = ["light", "sepia", "dark"];
-    const idx = order.indexOf(theme);
-    setTheme(order[(idx + 1) % 3]);
+    setTheme(order[(order.indexOf(theme) + 1) % 3]);
   };
 
   return (
     <div className="flex flex-col h-screen bg-background">
-      <ViewerToolbar
-        title={file.name}
-        onBack={onBack}
-        currentPage={currentPage}
-        totalPages={undefined}
-        onPrevPage={() => renditionRef.current?.prev()}
-        onNextPage={() => renditionRef.current?.next()}
-      >
+      <ViewerToolbar title={file.name} onBack={onBack}>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => renditionRef.current?.prev()}
+            disabled={atStart}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => renditionRef.current?.next()}
+            disabled={atEnd}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
         <Button variant="ghost" size="icon" onClick={() => setShowSettings(!showSettings)}>
           <Type className="h-4 w-4" />
         </Button>
@@ -125,7 +155,17 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         </div>
       )}
 
-      <div ref={viewerRef} className="flex-1 overflow-hidden" />
+      <div
+        ref={viewerRef}
+        className="flex-1 overflow-hidden"
+        style={{ background: themes[theme].bg }}
+      />
+
+      {!ready && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background">
+          <p className="text-muted-foreground animate-pulse">Loading book…</p>
+        </div>
+      )}
     </div>
   );
 }
