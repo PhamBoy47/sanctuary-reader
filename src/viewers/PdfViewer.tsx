@@ -3,7 +3,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import { ListTree, Search, ChevronLeft, ChevronRight, Hand, MousePointer2, GripVertical } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
-import { PdfSettingsPanel, defaultSettings, type PdfSettings } from "@/components/PdfSettingsPanel";
+import { defaultSettings, type PdfSettings } from "@/components/PdfSettingsPanel";
 import { PdfStatusBar, type DisplayMode } from "@/components/PdfStatusBar";
 import { PdfSearchBar } from "@/components/PdfSearchBar";
 import { PdfThumbnailPanel } from "@/components/PdfThumbnailPanel";
@@ -167,7 +167,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [sidebarTab, setSidebarTab] = useState<"toc" | "thumbs" | null>(null);
   const [tocItems, setTocItems] = useState<PdfTocItem[]>([]);
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("single");
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
   const [tool, setTool] = useState<"select" | "hand">("select");
 
   // Navigation history
@@ -482,16 +482,21 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
           navigateToPage(Math.min(totalPages, page + step));
         }}
+        onPageJump={(p) => navigateToPage(p)}
         zoom={zoom}
         onZoomIn={() => setZoom((z) => Math.min(3, z + 0.2))}
         onZoomOut={() => setZoom((z) => Math.max(0.4, z - 0.2))}
         onFitWidth={handleFitWidth}
+        settings={settings}
+        onSettingsChange={setSettings}
+        onPrint={handlePrint}
+        onRotatePage={handleRotate}
       >
         {/* Nav history back/forward */}
-        <Button variant="ghost" size="icon" onClick={navBack} disabled={navIndex <= 0} title="Previous view">
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={navBack} disabled={navIndex <= 0} title="Previous view">
           <ChevronLeft className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" onClick={navForward} disabled={navIndex >= navHistory.length - 1} title="Next view">
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={navForward} disabled={navIndex >= navHistory.length - 1} title="Next view">
           <ChevronRight className="h-4 w-4" />
         </Button>
 
@@ -501,6 +506,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         <Button
           variant={tool === "select" ? "secondary" : "ghost"}
           size="icon"
+          className="h-8 w-8"
           onClick={() => setTool("select")}
           title="Selection tool"
         >
@@ -509,6 +515,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         <Button
           variant={tool === "hand" ? "secondary" : "ghost"}
           size="icon"
+          className="h-8 w-8"
           onClick={() => setTool("hand")}
           title="Hand tool"
         >
@@ -518,7 +525,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         <div className="w-px h-5 bg-border mx-1" />
 
         {/* Search */}
-        <Button variant="ghost" size="icon" onClick={() => setShowSearch((o) => !o)} title="Find (Ctrl+F)">
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setShowSearch((o) => !o)} title="Find (Ctrl+F)">
           <Search className="h-4 w-4" />
         </Button>
 
@@ -526,6 +533,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         <Button
           variant={sidebarTab === "toc" ? "secondary" : "ghost"}
           size="icon"
+          className="h-8 w-8"
           onClick={() => setSidebarTab((t) => t === "toc" ? null : "toc")}
           title="Table of contents"
         >
@@ -534,18 +542,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         <Button
           variant={sidebarTab === "thumbs" ? "secondary" : "ghost"}
           size="icon"
+          className="h-8 w-8"
           onClick={() => setSidebarTab((t) => t === "thumbs" ? null : "thumbs")}
           title="Page thumbnails"
         >
           <GripVertical className="h-4 w-4" />
         </Button>
-
-        <PdfSettingsPanel
-          settings={settings}
-          onSettingsChange={setSettings}
-          onPrint={handlePrint}
-          onRotatePage={handleRotate}
-        />
       </ViewerToolbar>
 
       {/* Main area */}
@@ -603,7 +605,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         currentPage={page}
         totalPages={totalPages}
         displayMode={displayMode}
-        onPageJump={(p) => navigateToPage(p)}
         onDisplayModeChange={setDisplayMode}
         zoom={zoom}
       />
