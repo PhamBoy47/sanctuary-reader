@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import {
   ArrowLeft, ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   Printer, RotateCcw, Palette, Moon, Sun, Type, ArrowDownUp,
+  Bookmark, Highlighter, Sticker,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,9 +12,8 @@ import { Slider } from "@/components/ui/slider";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel,
-  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
-import type { PdfSettings, PageBackground, ScrollDirection } from "@/components/PdfSettingsPanel";
+import type { PdfSettings, PageBackground } from "@/components/PdfSettingsPanel";
 
 interface ViewerToolbarProps {
   title: string;
@@ -27,11 +27,16 @@ interface ViewerToolbarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onFitWidth?: () => void;
-  // Settings integration
   settings?: PdfSettings;
   onSettingsChange?: (settings: PdfSettings) => void;
   onPrint?: () => void;
   onRotatePage?: () => void;
+  onToggleBookmarks?: () => void;
+  onToggleHighlights?: () => void;
+  onToggleSymbols?: () => void;
+  bookmarksOpen?: boolean;
+  highlightsOpen?: boolean;
+  symbolsOpen?: boolean;
   children?: React.ReactNode;
 }
 
@@ -40,6 +45,8 @@ export function ViewerToolbar({
   onPrevPage, onNextPage, onPageJump,
   zoom, onZoomIn, onZoomOut, onFitWidth,
   settings, onSettingsChange, onPrint, onRotatePage,
+  onToggleBookmarks, onToggleHighlights, onToggleSymbols,
+  bookmarksOpen, highlightsOpen, symbolsOpen,
   children,
 }: ViewerToolbarProps) {
   const [jumpValue, setJumpValue] = useState("");
@@ -67,7 +74,7 @@ export function ViewerToolbar({
 
       <div className="w-px h-5 bg-border mx-1" />
 
-      {/* Page Navigation Group */}
+      {/* Page Navigation */}
       {currentPage != null && totalPages != null && (
         <div className="flex items-center gap-0.5">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1}>
@@ -79,8 +86,6 @@ export function ViewerToolbar({
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages}>
             <ChevronRight className="h-4 w-4" />
           </Button>
-
-          {/* Page jump input */}
           {onPageJump && (
             <Input
               value={jumpValue}
@@ -95,7 +100,7 @@ export function ViewerToolbar({
 
       <div className="w-px h-5 bg-border mx-1" />
 
-      {/* Zoom Group */}
+      {/* Zoom */}
       {zoom != null && (
         <div className="flex items-center gap-0.5">
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomOut}>
@@ -125,8 +130,6 @@ export function ViewerToolbar({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-64 p-3 space-y-3">
             <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground px-0">Appearance</DropdownMenuLabel>
-
-            {/* Background */}
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Page Background</Label>
               <div className="grid grid-cols-4 gap-1">
@@ -149,8 +152,6 @@ export function ViewerToolbar({
                 ))}
               </div>
             </div>
-
-            {/* Brightness */}
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Brightness — {settings.brightness}%</Label>
               <Slider
@@ -159,8 +160,6 @@ export function ViewerToolbar({
                 min={30} max={150} step={5}
               />
             </div>
-
-            {/* Invert */}
             <div className="flex items-center justify-between">
               <Label className="text-xs flex items-center gap-1.5">
                 <Moon className="h-3 w-3 text-muted-foreground" />
@@ -175,7 +174,7 @@ export function ViewerToolbar({
         </DropdownMenu>
       )}
 
-      {/* Layout/Scroll Dropdown */}
+      {/* Layout Dropdown */}
       {settings && onSettingsChange && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -185,35 +184,24 @@ export function ViewerToolbar({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56 p-3 space-y-3">
             <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground px-0">Layout & Scroll</DropdownMenuLabel>
-
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">Scroll Direction</Label>
               <div className="grid grid-cols-2 gap-1">
                 <Button
                   variant={settings.scrollDirection === "vertical" ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-7 text-xs"
+                  size="sm" className="h-7 text-xs"
                   onClick={() => updateSetting("scrollDirection", "vertical")}
-                >
-                  ↕ Vertical
-                </Button>
+                >↕ Vertical</Button>
                 <Button
                   variant={settings.scrollDirection === "horizontal" ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-7 text-xs"
+                  size="sm" className="h-7 text-xs"
                   onClick={() => updateSetting("scrollDirection", "horizontal")}
-                >
-                  ↔ Horizontal
-                </Button>
+                >↔ Horizontal</Button>
               </div>
             </div>
-
             <div className="flex items-center justify-between">
               <Label className="text-xs">Auto Fit Width</Label>
-              <Switch
-                checked={settings.autoFitWidth}
-                onCheckedChange={(v) => updateSetting("autoFitWidth", v)}
-              />
+              <Switch checked={settings.autoFitWidth} onCheckedChange={(v) => updateSetting("autoFitWidth", v)} />
             </div>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -233,44 +221,63 @@ export function ViewerToolbar({
             <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">Tools</DropdownMenuLabel>
             {onPrint && (
               <DropdownMenuItem onClick={onPrint}>
-                <Printer className="h-4 w-4 mr-2" />
-                Print Document
+                <Printer className="h-4 w-4 mr-2" /> Print Document
               </DropdownMenuItem>
             )}
             {onRotatePage && (
               <DropdownMenuItem onClick={onRotatePage}>
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Rotate Page
+                <RotateCcw className="h-4 w-4 mr-2" /> Rotate Page
               </DropdownMenuItem>
             )}
             {settings && onSettingsChange && (
               <>
                 <DropdownMenuSeparator />
                 <div className="px-2 py-1.5 flex items-center justify-between">
-                  <Label className="text-xs">Text Selection</Label>
-                  <Switch
-                    checked={settings.enableTextSelection}
-                    onCheckedChange={(v) => updateSetting("enableTextSelection", v)}
-                  />
-                </div>
-                <div className="px-2 py-1.5 flex items-center justify-between">
-                  <Label className="text-xs">Annotations</Label>
-                  <Switch
-                    checked={settings.showAnnotations}
-                    onCheckedChange={(v) => updateSetting("showAnnotations", v)}
-                  />
+                  <Label className="text-xs">Show Annotations</Label>
+                  <Switch checked={settings.showAnnotations} onCheckedChange={(v) => updateSetting("showAnnotations", v)} />
                 </div>
                 <div className="px-2 py-1.5 flex items-center justify-between">
                   <Label className="text-xs">Highlight Links</Label>
-                  <Switch
-                    checked={settings.highlightLinks}
-                    onCheckedChange={(v) => updateSetting("highlightLinks", v)}
-                  />
+                  <Switch checked={settings.highlightLinks} onCheckedChange={(v) => updateSetting("highlightLinks", v)} />
                 </div>
               </>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
+      )}
+
+      <div className="w-px h-5 bg-border mx-1" />
+
+      {/* Annotation toggles */}
+      {onToggleBookmarks && (
+        <Button
+          variant={bookmarksOpen ? "secondary" : "ghost"}
+          size="icon" className="h-8 w-8"
+          onClick={onToggleBookmarks}
+          title="Bookmarks"
+        >
+          <Bookmark className="h-4 w-4" />
+        </Button>
+      )}
+      {onToggleHighlights && (
+        <Button
+          variant={highlightsOpen ? "secondary" : "ghost"}
+          size="icon" className="h-8 w-8"
+          onClick={onToggleHighlights}
+          title="Highlights"
+        >
+          <Highlighter className="h-4 w-4" />
+        </Button>
+      )}
+      {onToggleSymbols && (
+        <Button
+          variant={symbolsOpen ? "secondary" : "ghost"}
+          size="icon" className="h-8 w-8"
+          onClick={onToggleSymbols}
+          title="Symbol Annotations"
+        >
+          <Sticker className="h-4 w-4" />
+        </Button>
       )}
 
       <div className="flex-1" />
