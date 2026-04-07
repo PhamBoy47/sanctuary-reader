@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import { ListTree } from "lucide-react";
+import { ListTree, Search, ChevronLeft, ChevronRight, Hand, MousePointer2, GripVertical } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
 import { PdfSettingsPanel, defaultSettings, type PdfSettings } from "@/components/PdfSettingsPanel";
+import { PdfStatusBar, type DisplayMode } from "@/components/PdfStatusBar";
+import { PdfSearchBar } from "@/components/PdfSearchBar";
+import { PdfThumbnailPanel } from "@/components/PdfThumbnailPanel";
+import { PdfContextMenu } from "@/components/PdfContextMenu";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import type { FileEntry } from "@/lib/fileStore";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
@@ -85,7 +90,7 @@ function createPdfLinkService(doc: pdfjsLib.PDFDocumentProxy, setPage: PageSette
   };
 }
 
-/* ── Background filter helpers ───────────────────────────────────── */
+/* ── Filter helpers ──────────────────────────────────────────────── */
 
 function getPageFilter(settings: PdfSettings): string {
   const parts: string[] = [];
@@ -102,10 +107,8 @@ function getPageFilter(settings: PdfSettings): string {
 async function printPdf(pdfDoc: pdfjsLib.PDFDocumentProxy) {
   const printWindow = window.open("", "_blank");
   if (!printWindow) return;
-
   printWindow.document.write("<html><head><title>Print PDF</title><style>@media print { @page { margin: 0; } body { margin: 0; } canvas { page-break-after: always; display: block; width: 100%; } canvas:last-child { page-break-after: auto; } } body { margin: 0; background: white; }</style></head><body></body></html>");
   printWindow.document.close();
-
   for (let i = 1; i <= pdfDoc.numPages; i++) {
     const page = await pdfDoc.getPage(i);
     const viewport = page.getViewport({ scale: 2 });
@@ -117,11 +120,33 @@ async function printPdf(pdfDoc: pdfjsLib.PDFDocumentProxy) {
     await page.render({ canvasContext: ctx, viewport }).promise;
     printWindow.document.body.appendChild(canvas);
   }
+  setTimeout(() => { printWindow.focus(); printWindow.print(); }, 500);
+}
 
-  setTimeout(() => {
-    printWindow.focus();
-    printWindow.print();
-  }, 500);
+/* ── Search helpers ──────────────────────────────────────────────── */
+
+interface SearchResult { page: number; index: number; }
+
+async function searchPdf(
+  pdfDoc: pdfjsLib.PDFDocumentProxy,
+  query: string,
+): Promise<SearchResult[]> {
+  if (!query.trim()) return [];
+  const results: SearchResult[] = [];
+  const lowerQuery = query.toLowerCase();
+  for (let i = 1; i <= pdfDoc.numPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items.map((item: any) => item.str).join(" ").toLowerCase();
+    let idx = 0;
+    let pos = pageText.indexOf(lowerQuery, idx);
+    while (pos !== -1) {
+      results.push({ page: i, index: results.length });
+      idx = pos + 1;
+      pos = pageText.indexOf(lowerQuery, idx);
+    }
+  }
+  return results;
 }
 
 /* ── Component ───────────────────────────────────────────────────── */
@@ -139,15 +164,26 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [totalPages, setTotalPages] = useState(0);
   const [zoom, setZoom] = useState(1.2);
   const [rotation, setRotation] = useState(0);
-  const [showToc, setShowToc] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<"toc" | "thumbs" | null>(null);
   const [tocItems, setTocItems] = useState<PdfTocItem[]>([]);
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("single");
+  const [tool, setTool] = useState<"select" | "hand">("select");
+
+  // Navigation history
+  const [navHistory, setNavHistory] = useState<number[]>([1]);
+  const [navIndex, setNavIndex] = useState(0);
+  const isNavJump = useRef(false);
+
+  // Search state
+  const [showSearch, setShowSearch] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [currentResultIdx, setCurrentResultIdx] = useState(0);
 
   /* Load PDF */
   useEffect(() => {
     let cancelled = false;
     const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(file.data) });
-
     loadingTask.promise
       .then(async (doc) => {
         if (cancelled) return;
@@ -157,9 +193,40 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         if (!cancelled) setTocItems(outline ? await mapPdfOutlineItems(doc, outline) : []);
       })
       .catch((error) => { if (!cancelled) console.error("Failed to load PDF", error); });
-
     return () => { cancelled = true; loadingTask.destroy(); };
   }, [file.data]);
+
+  /* Navigation history tracking */
+  const navigateToPage = useCallback((p: number) => {
+    setPage(p);
+    if (!isNavJump.current) {
+      setNavHistory((h) => {
+        const newH = h.slice(0, navIndex + 1);
+        newH.push(p);
+        return newH;
+      });
+      setNavIndex((i) => i + 1);
+    }
+    isNavJump.current = false;
+  }, [navIndex]);
+
+  const navBack = useCallback(() => {
+    if (navIndex > 0) {
+      isNavJump.current = true;
+      const newIdx = navIndex - 1;
+      setNavIndex(newIdx);
+      setPage(navHistory[newIdx]);
+    }
+  }, [navIndex, navHistory]);
+
+  const navForward = useCallback(() => {
+    if (navIndex < navHistory.length - 1) {
+      isNavJump.current = true;
+      const newIdx = navIndex + 1;
+      setNavIndex(newIdx);
+      setPage(navHistory[newIdx]);
+    }
+  }, [navIndex, navHistory]);
 
   /* TOC */
   const flatTocItems = useMemo(() => flattenPdfTocItems(tocItems), [tocItems]);
@@ -174,9 +241,9 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     if (tocItem.url) { window.open(tocItem.url, "_blank", "noopener,noreferrer"); return; }
     if (!pdf) return;
     const p = tocItem.page ?? (await resolvePdfDestination(pdf, tocItem.dest).catch(() => null));
-    if (p) setPage(p);
-    if (window.innerWidth < 768) setShowToc(false);
-  }, [pdf]);
+    if (p) navigateToPage(p);
+    if (window.innerWidth < 768) setSidebarTab(null);
+  }, [pdf, navigateToPage]);
 
   /* Fit width */
   const handleFitWidth = useCallback(async () => {
@@ -187,23 +254,45 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setZoom(Math.max(0.4, Math.min(3, availableWidth / baseViewport.width)));
   }, [page, pdf]);
 
-  /* Auto fit width on setting change */
   useEffect(() => {
     if (settings.autoFitWidth) handleFitWidth();
   }, [settings.autoFitWidth, handleFitWidth]);
 
-  /* Render page */
+  /* Search */
+  const handleSearch = useCallback(async (query: string) => {
+    if (!pdf || !query.trim()) { setSearchResults([]); setCurrentResultIdx(0); return; }
+    const results = await searchPdf(pdf, query);
+    setSearchResults(results);
+    setCurrentResultIdx(results.length > 0 ? 1 : 0);
+    if (results.length > 0) navigateToPage(results[0].page);
+  }, [pdf, navigateToPage]);
+
+  const handleNextResult = useCallback(() => {
+    if (searchResults.length === 0) return;
+    const next = currentResultIdx >= searchResults.length ? 1 : currentResultIdx + 1;
+    setCurrentResultIdx(next);
+    navigateToPage(searchResults[next - 1].page);
+  }, [searchResults, currentResultIdx, navigateToPage]);
+
+  const handlePrevResult = useCallback(() => {
+    if (searchResults.length === 0) return;
+    const prev = currentResultIdx <= 1 ? searchResults.length : currentResultIdx - 1;
+    setCurrentResultIdx(prev);
+    navigateToPage(searchResults[prev - 1].page);
+  }, [searchResults, currentResultIdx, navigateToPage]);
+
+  const handleSearchFromContext = useCallback((text: string) => {
+    setShowSearch(true);
+    handleSearch(text);
+  }, [handleSearch]);
+
+  /* Render pages */
   useEffect(() => {
     if (!pdf || !containerRef.current) return;
     let cancelled = false;
-    let renderTask: pdfjsLib.RenderTask | null = null;
-    let textLayerTask: { cancel?: () => void; promise?: Promise<void> } | null = null;
 
-    const render = async () => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const pdfPage = await pdf.getPage(page);
+    const renderPage = async (pageNum: number, container: HTMLElement) => {
+      const pdfPage = await pdf.getPage(pageNum);
       const viewport = pdfPage.getViewport({ scale: zoom, rotation });
       const outputScale = window.devicePixelRatio || 1;
 
@@ -212,6 +301,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       wrapper.style.width = `${viewport.width}px`;
       wrapper.style.height = `${viewport.height}px`;
       wrapper.style.setProperty("--scale-factor", `${viewport.scale}`);
+      wrapper.dataset.pageNumber = String(pageNum);
 
       const filter = getPageFilter(settings);
       if (filter !== "none") wrapper.style.filter = filter;
@@ -243,16 +333,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         wrapper.appendChild(annotationDiv);
       }
 
-      container.replaceChildren(wrapper);
+      container.appendChild(wrapper);
       if (cancelled) return;
 
-      renderTask = pdfPage.render({
+      const renderTask = pdfPage.render({
         annotationMode: settings.showAnnotations ? pdfjsLib.AnnotationMode.ENABLE_FORMS : pdfjsLib.AnnotationMode.DISABLE,
         canvasContext: ctx,
         transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
         viewport,
       });
-
       await renderTask.promise;
 
       /* Render text layer */
@@ -261,7 +350,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         if (textDiv) {
           const textContent = await pdfPage.getTextContent();
           if (cancelled) return;
-          textLayerTask = (pdfjsLib as any).renderTextLayer({
+          const textLayerTask = (pdfjsLib as any).renderTextLayer({
             container: textDiv,
             textContentSource: textContent,
             textContentItemsStr: [],
@@ -295,25 +384,64 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       }
     };
 
+    const render = async () => {
+      const container = containerRef.current;
+      if (!container) return;
+      container.replaceChildren();
+
+      if (displayMode === "continuous") {
+        // Render all pages
+        for (let i = 1; i <= totalPages; i++) {
+          if (cancelled) return;
+          await renderPage(i, container);
+        }
+      } else if (displayMode === "double" || displayMode === "facing") {
+        // Render current page and next page side by side
+        const row = document.createElement("div");
+        row.className = "flex gap-4 items-start";
+        container.appendChild(row);
+
+        const startPage = displayMode === "facing"
+          ? (page % 2 === 0 ? page - 1 : page)
+          : page;
+        
+        await renderPage(Math.max(1, startPage), row);
+        if (startPage + 1 <= totalPages) {
+          await renderPage(startPage + 1, row);
+        }
+      } else {
+        // Single page
+        await renderPage(page, container);
+      }
+    };
+
     render().catch((error) => { if (!cancelled) console.error("Failed to render PDF page", error); });
 
     return () => {
       cancelled = true;
-      renderTask?.cancel();
-      textLayerTask?.cancel?.();
       containerRef.current?.replaceChildren();
     };
-  }, [page, pdf, totalPages, zoom, rotation, settings]);
+  }, [page, pdf, totalPages, zoom, rotation, settings, displayMode]);
 
   /* Keyboard nav */
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") setPage((p) => Math.min(totalPages, p + 1));
-      else if (e.key === "ArrowLeft" || e.key === "ArrowUp") setPage((p) => Math.max(1, p - 1));
+      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        e.preventDefault();
+        setShowSearch(true);
+        return;
+      }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+        setPage((p) => Math.min(totalPages, p + step));
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+        setPage((p) => Math.max(1, p - step));
+      }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [totalPages]);
+  }, [totalPages, displayMode]);
 
   /* Ctrl+scroll zoom */
   useEffect(() => {
@@ -329,38 +457,89 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
   /* Print */
   const handlePrint = useCallback(() => { if (pdf) printPdf(pdf); }, [pdf]);
-
-  /* Rotate */
   const handleRotate = useCallback(() => { setRotation((r) => (r + 90) % 360); }, []);
 
-  /* Scroll direction class */
+  /* Scroll class */
   const scrollClass = settings.scrollDirection === "horizontal"
     ? "flex flex-row items-center overflow-x-auto overflow-y-hidden"
-    : "flex flex-1 justify-center overflow-auto";
+    : "flex flex-1 flex-col items-center overflow-auto";
+
+  const cursorClass = tool === "hand" ? "cursor-grab active:cursor-grabbing" : "";
 
   return (
     <div className="flex h-screen flex-col bg-background">
+      {/* Top Command Bar */}
       <ViewerToolbar
         title={file.name}
         onBack={onBack}
         currentPage={page}
         totalPages={totalPages}
-        onPrevPage={() => setPage((p) => Math.max(1, p - 1))}
-        onNextPage={() => setPage((p) => Math.min(totalPages, p + 1))}
+        onPrevPage={() => {
+          const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+          navigateToPage(Math.max(1, page - step));
+        }}
+        onNextPage={() => {
+          const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+          navigateToPage(Math.min(totalPages, page + step));
+        }}
         zoom={zoom}
         onZoomIn={() => setZoom((z) => Math.min(3, z + 0.2))}
         onZoomOut={() => setZoom((z) => Math.max(0.4, z - 0.2))}
         onFitWidth={handleFitWidth}
       >
+        {/* Nav history back/forward */}
+        <Button variant="ghost" size="icon" onClick={navBack} disabled={navIndex <= 0} title="Previous view">
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={navForward} disabled={navIndex >= navHistory.length - 1} title="Next view">
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+
+        <div className="w-px h-5 bg-border mx-1" />
+
+        {/* Tool toggle */}
         <Button
-          variant="ghost"
+          variant={tool === "select" ? "secondary" : "ghost"}
           size="icon"
-          aria-label="Toggle table of contents"
-          aria-pressed={showToc}
-          onClick={() => setShowToc((o) => !o)}
+          onClick={() => setTool("select")}
+          title="Selection tool"
+        >
+          <MousePointer2 className="h-4 w-4" />
+        </Button>
+        <Button
+          variant={tool === "hand" ? "secondary" : "ghost"}
+          size="icon"
+          onClick={() => setTool("hand")}
+          title="Hand tool"
+        >
+          <Hand className="h-4 w-4" />
+        </Button>
+
+        <div className="w-px h-5 bg-border mx-1" />
+
+        {/* Search */}
+        <Button variant="ghost" size="icon" onClick={() => setShowSearch((o) => !o)} title="Find (Ctrl+F)">
+          <Search className="h-4 w-4" />
+        </Button>
+
+        {/* Sidebar toggles */}
+        <Button
+          variant={sidebarTab === "toc" ? "secondary" : "ghost"}
+          size="icon"
+          onClick={() => setSidebarTab((t) => t === "toc" ? null : "toc")}
+          title="Table of contents"
         >
           <ListTree className="h-4 w-4" />
         </Button>
+        <Button
+          variant={sidebarTab === "thumbs" ? "secondary" : "ghost"}
+          size="icon"
+          onClick={() => setSidebarTab((t) => t === "thumbs" ? null : "thumbs")}
+          title="Page thumbnails"
+        >
+          <GripVertical className="h-4 w-4" />
+        </Button>
+
         <PdfSettingsPanel
           settings={settings}
           onSettingsChange={setSettings}
@@ -369,20 +548,65 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         />
       </ViewerToolbar>
 
+      {/* Main area */}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
-        <DocumentTocSidebar
-          title="PDF contents"
-          items={tocItems}
-          isOpen={showToc}
-          activeId={activeTocId}
-          onClose={() => setShowToc(false)}
-          onSelect={handleTocSelect}
-        />
+        {/* Left Sidebar */}
+        {sidebarTab === "toc" && (
+          <DocumentTocSidebar
+            title="PDF contents"
+            items={tocItems}
+            isOpen={true}
+            activeId={activeTocId}
+            onClose={() => setSidebarTab(null)}
+            onSelect={handleTocSelect}
+          />
+        )}
+        {sidebarTab === "thumbs" && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-44 max-w-[85vw] flex-col border-r border-border glass-surface md:relative md:max-w-none md:shrink-0">
+            <div className="flex items-center justify-between border-b border-border px-3 py-2">
+              <span className="text-xs font-medium text-foreground">Thumbnails</span>
+              <Button variant="ghost" size="icon" className="h-6 w-6 md:hidden" onClick={() => setSidebarTab(null)}>
+                <span className="text-xs">✕</span>
+              </Button>
+            </div>
+            <PdfThumbnailPanel
+              pdf={pdf}
+              currentPage={page}
+              onPageSelect={(p) => navigateToPage(p)}
+              isOpen={true}
+            />
+          </aside>
+        )}
 
-        <div ref={viewportRef} className={`${scrollClass} p-4 md:p-8`}>
-          <div ref={containerRef} className="shrink-0" />
+        {/* Canvas viewport */}
+        <div ref={viewportRef} className={`relative flex-1 ${scrollClass} ${cursorClass} p-4 md:p-8`}>
+          <div ref={containerRef} className={`shrink-0 ${displayMode === "continuous" ? "space-y-4" : ""}`} />
+
+          {/* Floating context menu */}
+          <PdfContextMenu containerRef={viewportRef} onSearchText={handleSearchFromContext} />
+
+          {/* Search bar */}
+          <PdfSearchBar
+            isOpen={showSearch}
+            onClose={() => { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); }}
+            onSearch={handleSearch}
+            onNextResult={handleNextResult}
+            onPrevResult={handlePrevResult}
+            currentResult={currentResultIdx}
+            totalResults={searchResults.length}
+          />
         </div>
       </div>
+
+      {/* Bottom Status Bar */}
+      <PdfStatusBar
+        currentPage={page}
+        totalPages={totalPages}
+        displayMode={displayMode}
+        onPageJump={(p) => navigateToPage(p)}
+        onDisplayModeChange={setDisplayMode}
+        zoom={zoom}
+      />
     </div>
   );
 }
