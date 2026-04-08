@@ -434,11 +434,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         if (textDiv) {
           const textContent = await pdfPage.getTextContent();
           if (cancelled) return;
-          const textLayerTask = (pdfjsLib as any).renderTextLayer({
-            container: textDiv, textContentSource: textContent,
-            textContentItemsStr: [], textDivs: [], viewport,
+          const textLayer = new pdfjsLib.TextLayer({
+            container: textDiv,
+            textContentSource: textContent,
+            viewport,
           });
-          await textLayerTask?.promise;
+          await textLayer.render();
         }
       }
 
@@ -451,13 +452,19 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
             annotationDiv.hidden = annotations.length === 0;
             return;
           }
-          const annotationLayer = new (pdfjsLib as any).AnnotationLayer({
-            div: annotationDiv, page: pdfPage,
+          const annotationLayer = new pdfjsLib.AnnotationLayer({
+            div: annotationDiv,
+            page: pdfPage,
             viewport: viewport.clone({ dontFlip: true }),
+            linkService: createPdfLinkService(pdf!, setPage, totalPages),
+            annotationStorage: (pdf as any).annotationStorage,
           });
           await annotationLayer.render({
             annotations,
-            linkService: createPdfLinkService(pdf, setPage, totalPages),
+            viewport: viewport.clone({ dontFlip: true }),
+            div: annotationDiv,
+            page: pdfPage,
+            linkService: createPdfLinkService(pdf!, setPage, totalPages),
             renderForms: true,
           });
         }
