@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   ArrowLeft, ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   Printer, RotateCcw, Palette, Moon, Sun, Type, ArrowDownUp,
@@ -27,6 +27,7 @@ interface ViewerToolbarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onFitWidth?: () => void;
+  onToggleAutoFitWidth?: () => void;
   settings?: PdfSettings;
   onSettingsChange?: (settings: PdfSettings) => void;
   onPrint?: () => void;
@@ -43,21 +44,30 @@ interface ViewerToolbarProps {
 export function ViewerToolbar({
   title, onBack, currentPage, totalPages,
   onPrevPage, onNextPage, onPageJump,
-  zoom, onZoomIn, onZoomOut, onFitWidth,
+  zoom, onZoomIn, onZoomOut, onFitWidth, onToggleAutoFitWidth,
   settings, onSettingsChange, onPrint, onRotatePage,
   onToggleBookmarks, onToggleHighlights, onToggleSymbols,
   bookmarksOpen, highlightsOpen, symbolsOpen,
   children,
 }: ViewerToolbarProps) {
-  const [jumpValue, setJumpValue] = useState("");
+  const [jumpValue, setJumpValue] = useState(currentPage?.toString() || "");
+  const [isEditing, setIsEditing] = useState(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setJumpValue(currentPage?.toString() || "");
+    }
+  }, [currentPage, isEditing]);
 
   const handleJump = useCallback(() => {
+    setIsEditing(false);
     const p = parseInt(jumpValue, 10);
-    if (!isNaN(p) && p >= 1 && totalPages && p <= totalPages && onPageJump) {
+    if (!isNaN(p) && p >= 1 && totalPages && p <= totalPages && onPageJump && p !== currentPage) {
       onPageJump(p);
-      setJumpValue("");
+    } else {
+      setJumpValue(currentPage?.toString() || "");
     }
-  }, [jumpValue, totalPages, onPageJump]);
+  }, [jumpValue, totalPages, onPageJump, currentPage]);
 
   const updateSetting = <K extends keyof PdfSettings>(key: K, value: PdfSettings[K]) => {
     if (settings && onSettingsChange) {
@@ -80,21 +90,33 @@ export function ViewerToolbar({
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <span className="text-xs text-muted-foreground font-mono min-w-[50px] text-center">
-            {currentPage}/{totalPages}
-          </span>
+          <div className="flex items-center justify-center min-w-[60px] text-[13px] text-muted-foreground font-mono">
+            {onPageJump ? (
+              <Input
+                value={jumpValue}
+                onChange={(e) => setJumpValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleJump();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                onFocus={(e) => {
+                  setIsEditing(true);
+                  e.target.select();
+                }}
+                onBlur={handleJump}
+                className="h-6 w-10 text-center text-[13px] p-0 bg-transparent border-transparent hover:border-input focus-visible:ring-1 focus-visible:border-input focus-visible:bg-background mr-1"
+                title="Go to page"
+              />
+            ) : (
+              <span className="mr-1">{currentPage}</span>
+            )}
+            <span>/ {totalPages}</span>
+          </div>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages}>
             <ChevronRight className="h-4 w-4" />
           </Button>
-          {onPageJump && (
-            <Input
-              value={jumpValue}
-              onChange={(e) => setJumpValue(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleJump()}
-              placeholder="Go to…"
-              className="h-7 w-16 text-xs px-2 bg-secondary border-border ml-1"
-            />
-          )}
         </div>
       )}
 
@@ -110,11 +132,21 @@ export function ViewerToolbar({
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomIn}>
             <ZoomIn className="h-4 w-4" />
           </Button>
-          {onFitWidth && (
+          {settings && onSettingsChange && onToggleAutoFitWidth ? (
+            <Button 
+              variant={settings.autoFitWidth ? "secondary" : "ghost"} 
+              size="icon" 
+              className="h-8 w-8" 
+              onClick={onToggleAutoFitWidth} 
+              title={settings.autoFitWidth ? "Disable Auto Fit Width" : "Enable Auto Fit Width"}
+            >
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+          ) : onFitWidth ? (
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onFitWidth} title="Fit width">
               <Maximize2 className="h-4 w-4" />
             </Button>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -201,7 +233,7 @@ export function ViewerToolbar({
             </div>
             <div className="flex items-center justify-between">
               <Label className="text-xs">Auto Fit Width</Label>
-              <Switch checked={settings.autoFitWidth} onCheckedChange={(v) => updateSetting("autoFitWidth", v)} />
+              <Switch checked={settings.autoFitWidth} onCheckedChange={() => onToggleAutoFitWidth?.()} />
             </div>
           </DropdownMenuContent>
         </DropdownMenu>

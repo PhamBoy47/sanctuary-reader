@@ -1,8 +1,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss/base";
+@import "tailwindcss/components";
+@import "tailwindcss/utilities";
 
 @layer base {
   :root {
@@ -106,66 +106,12 @@
 
 .pdf-canvas {
   display: block;
-}
-
-.textLayer {
   position: absolute;
-  text-align: initial;
-  inset: 0;
-  overflow: hidden;
-  opacity: 1;
-  line-height: 1;
-  text-size-adjust: none;
-  forced-color-adjust: none;
-  transform-origin: 0 0;
-  z-index: 2;
-}
-
-.textLayer :is(span, br) {
-  color: transparent;
-  position: absolute;
-  white-space: pre;
-  cursor: text;
-  transform-origin: 0% 0%;
-  line-height: 1.2;
-  pointer-events: all;
-}
-
-.textLayer span {
-  padding: 0.05em 0;
-}
-
-.textLayer span.markedContent {
   top: 0;
-  height: 0;
+  left: 0;
 }
 
-.textLayer .endOfContent {
-  display: block;
-  position: absolute;
-  inset: 100% 0 0;
-  z-index: -1;
-  cursor: default;
-  user-select: none;
-}
 
-.textLayer .endOfContent.active {
-  top: 0;
-}
-
-.textLayer ::selection {
-  background: rgba(59, 130, 246, 0.35);
-  mix-blend-mode: multiply;
-}
-
-.textLayer ::-moz-selection {
-  background: rgba(59, 130, 246, 0.35);
-  mix-blend-mode: multiply;
-}
-
-.textLayer span {
-  pointer-events: all;
-}
 
 /* Search highlights — #98FF98 mint green */
 .pdf-search-highlight {
@@ -191,102 +137,25 @@
   outline-offset: 1px;
 }
 
-.textLayer br::selection {
-  background: transparent;
+/* Ensure text selection works above the canvas */
+.textLayer {
+  z-index: 2 !important;
+  opacity: 1 !important;
 }
 
-.annotationLayer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  transform-origin: 0 0;
-  z-index: 3;
+.textLayer span {
+  color: transparent !important;
+  pointer-events: auto !important;
+  cursor: text !important;
 }
 
-.annotationLayer[data-main-rotation="90"] .norotate {
-  transform: rotate(270deg) translateX(-100%);
+.textLayer ::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+.textLayer ::-moz-selection {
+  background: rgba(59, 130, 246, 0.35);
 }
 
-.annotationLayer[data-main-rotation="180"] .norotate {
-  transform: rotate(180deg) translate(-100%, -100%);
-}
 
-.annotationLayer[data-main-rotation="270"] .norotate {
-  transform: rotate(90deg) translateY(-100%);
-}
 
-.annotationLayer canvas {
-  position: absolute;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
 
-.annotationLayer section {
-  position: absolute;
-  text-align: initial;
-  pointer-events: auto;
-  box-sizing: border-box;
-  transform-origin: 0 0;
-}
-
-.annotationLayer .textAnnotation img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  cursor: pointer;
-}
-
-.annotationLayer :is(.linkAnnotation, .buttonWidgetAnnotation.pushButton) > a {
-  position: absolute;
-  inset: 0;
-}
-
-.annotationLayer :is(.linkAnnotation, .buttonWidgetAnnotation.pushButton):not(.hasBorder) > a:hover {
-  background: hsl(var(--primary) / 0.18);
-  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.35);
-}
-
-.annotationLayer .linkAnnotation.hasBorder:hover {
-  background: hsl(var(--primary) / 0.12);
-}
-
-.annotationLayer .textWidgetAnnotation :is(input, textarea),
-.annotationLayer .choiceWidgetAnnotation select,
-.annotationLayer .buttonWidgetAnnotation:is(.checkBox, .radioButton) input {
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  border: 1px solid hsl(var(--border));
-  background: hsl(var(--background) / 0.4);
-  color: hsl(var(--foreground));
-  font: calc(9px * var(--scale-factor)) sans-serif;
-}
-
-.annotationLayer .textWidgetAnnotation textarea {
-  resize: none;
-}
-
-.annotationLayer .textWidgetAnnotation :is(input, textarea):focus,
-.annotationLayer .choiceWidgetAnnotation select:focus,
-.annotationLayer .buttonWidgetAnnotation:is(.checkBox, .radioButton) input:focus {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 1px;
-}
-
-.annotationLayer .buttonWidgetAnnotation.radioButton input {
-  border-radius: 9999px;
-}
-
-.annotationLayer .popupAnnotation .popup {
-  position: absolute;
-  z-index: 40;
-  max-width: min(24rem, 80vw);
-  border: 1px solid hsl(var(--border));
-  border-radius: calc(var(--radius) - 0.2rem);
-  background: hsl(var(--popover) / 0.96);
-  color: hsl(var(--popover-foreground));
-  box-shadow: 0 20px 60px -30px hsl(var(--background));
-  padding: 0.75rem;
-}

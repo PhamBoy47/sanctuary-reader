@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import * as pdfjsLib from "pdfjs-dist";
+import "pdfjs-dist/web/pdf_viewer.css";
 import { ListTree, Search, ChevronLeft, ChevronRight, GripVertical } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
@@ -118,7 +119,7 @@ async function printPdf(pdfDoc: pdfjsLib.PDFDocumentProxy) {
     canvas.width = viewport.width; canvas.height = viewport.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) continue;
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvasContext: ctx, viewport, canvas }).promise;
     printWindow.document.body.appendChild(canvas);
   }
   setTimeout(() => { printWindow.focus(); printWindow.print(); }, 500);
@@ -163,11 +164,13 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [tocItems, setTocItems] = useState<PdfTocItem[]>([]);
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
+  const zoomBeforeFit = useRef<number | null>(null);
 
   // Navigation history
   const [navHistory, setNavHistory] = useState<number[]>([1]);
   const [navIndex, setNavIndex] = useState(0);
   const isNavJump = useRef(false);
+  const isUserScrolling = useRef(false);
 
   // Search state
   const [showSearch, setShowSearch] = useState(false);
@@ -212,18 +215,23 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   }, [file.data]);
 
   /* Navigation history */
-  const navigateToPage = useCallback((p: number) => {
-    setPage(p);
-    if (!isNavJump.current) {
-      setNavHistory((h) => { const newH = h.slice(0, navIndex + 1); newH.push(p); return newH; });
-      setNavIndex((i) => i + 1);
-    }
-    isNavJump.current = false;
+  const navigateToPage = useCallback((p: number | ((prev: number) => number)) => {
+    isUserScrolling.current = true;
+    setPage((prevPage) => {
+      const newPage = typeof p === "function" ? p(prevPage) : p;
+      if (!isNavJump.current && newPage !== prevPage) {
+        setNavHistory((h) => { const newH = h.slice(0, navIndex + 1); newH.push(newPage); return newH; });
+        setNavIndex((i) => i + 1);
+      }
+      isNavJump.current = false;
+      return newPage;
+    });
   }, [navIndex]);
 
   const navBack = useCallback(() => {
     if (navIndex > 0) {
       isNavJump.current = true;
+      isUserScrolling.current = true;
       const newIdx = navIndex - 1;
       setNavIndex(newIdx);
       setPage(navHistory[newIdx]);
@@ -233,6 +241,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const navForward = useCallback(() => {
     if (navIndex < navHistory.length - 1) {
       isNavJump.current = true;
+      isUserScrolling.current = true;
       const newIdx = navIndex + 1;
       setNavIndex(newIdx);
       setPage(navHistory[newIdx]);
@@ -264,6 +273,22 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     const availableWidth = Math.max(viewportRef.current.clientWidth - 32, 240);
     setZoom(Math.max(0.4, Math.min(3, availableWidth / baseViewport.width)));
   }, [page, pdf]);
+
+  /* Handle autoFitWidth toggle: save zoom before fitting, restore when toggling off */
+  const handleToggleAutoFitWidth = useCallback(() => {
+    if (!settings.autoFitWidth) {
+      // Turning ON — save current zoom for later restore
+      zoomBeforeFit.current = zoom;
+      setSettings((prev) => ({ ...prev, autoFitWidth: true }));
+    } else {
+      // Turning OFF — restore previous zoom
+      if (zoomBeforeFit.current !== null) {
+        setZoom(zoomBeforeFit.current);
+        zoomBeforeFit.current = null;
+      }
+      setSettings((prev) => ({ ...prev, autoFitWidth: false }));
+    }
+  }, [settings.autoFitWidth, zoom]);
 
   useEffect(() => { if (settings.autoFitWidth) handleFitWidth(); }, [settings.autoFitWidth, handleFitWidth]);
 
@@ -333,24 +358,13 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   }, [placingSymbol, file.id, activeSymbol]);
 
   /* Render pages */
+  const renderTrigger = displayMode === "continuous" ? "all" : String(page);
   useEffect(() => {
     if (!pdf || !containerRef.current) return;
     let cancelled = false;
 
-    const renderPage = async (pageNum: number, container: HTMLElement) => {
-      const pdfPage = await pdf.getPage(pageNum);
-      const viewport = pdfPage.getViewport({ scale: zoom, rotation });
+    const renderPage = async (pageNum: number, wrapper: HTMLElement, pdfPage: pdfjsLib.PDFPageProxy, viewport: pdfjsLib.PageViewport) => {
       const outputScale = window.devicePixelRatio || 1;
-
-      const wrapper = document.createElement("div");
-      wrapper.className = "pdf-page relative";
-      wrapper.style.width = `${viewport.width}px`;
-      wrapper.style.height = `${viewport.height}px`;
-      wrapper.style.setProperty("--scale-factor", `${viewport.scale}`);
-      wrapper.dataset.pageNumber = String(pageNum);
-
-      const filter = getPageFilter(settings);
-      if (filter !== "none") wrapper.style.filter = filter;
 
       const canvas = document.createElement("canvas");
       canvas.className = "pdf-canvas";
@@ -366,7 +380,8 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if (settings.enableTextSelection) {
         const textDiv = document.createElement("div");
         textDiv.className = "textLayer";
-        textDiv.style.setProperty("--scale-factor", `${viewport.scale}`);
+        textDiv.style.setProperty("--scale-factor", String(viewport.scale));
+        textDiv.style.setProperty("--total-scale-factor", String(viewport.scale));
         wrapper.appendChild(textDiv);
       }
 
@@ -417,12 +432,13 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         wrapper.appendChild(symOverlay);
       }
 
-      container.appendChild(wrapper);
+
       if (cancelled) return;
 
       const renderTask = pdfPage.render({
         annotationMode: settings.showAnnotations ? pdfjsLib.AnnotationMode.ENABLE_FORMS : pdfjsLib.AnnotationMode.DISABLE,
         canvasContext: ctx,
+        canvas,
         transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
         viewport,
       });
@@ -452,21 +468,22 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
             annotationDiv.hidden = annotations.length === 0;
             return;
           }
+          const linkService = createPdfLinkService(pdf!, navigateToPage as any, totalPages) as any;
           const annotationLayer = new pdfjsLib.AnnotationLayer({
             div: annotationDiv,
             page: pdfPage,
             viewport: viewport.clone({ dontFlip: true }),
-            linkService: createPdfLinkService(pdf!, setPage, totalPages),
+            linkService,
             annotationStorage: (pdf as any).annotationStorage,
-          });
+          } as any);
           await annotationLayer.render({
             annotations,
             viewport: viewport.clone({ dontFlip: true }),
             div: annotationDiv,
             page: pdfPage,
-            linkService: createPdfLinkService(pdf!, setPage, totalPages),
+            linkService,
             renderForms: true,
-          });
+          } as any);
         }
       }
     };
@@ -476,26 +493,73 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if (!container) return;
       container.replaceChildren();
 
+      /* Pre-create placeholders for continuous mode to fix scroll jumping and observers */
       if (displayMode === "continuous") {
+        const pageDatas = [];
+        // Pass 1: Get metadata and create placeholders
         for (let i = 1; i <= totalPages; i++) {
           if (cancelled) return;
-          await renderPage(i, container);
+          const pdfPage = await pdf.getPage(i);
+          const viewport = pdfPage.getViewport({ scale: zoom, rotation });
+          
+          const wrapper = document.createElement("div");
+          wrapper.className = "pdf-page relative overflow-hidden bg-muted/5";
+          wrapper.style.width = `${viewport.width}px`;
+          wrapper.style.height = `${viewport.height}px`;
+          wrapper.style.setProperty("--scale-factor", String(viewport.scale));
+          wrapper.style.setProperty("--total-scale-factor", String(viewport.scale));
+          wrapper.style.setProperty("--user-unit", "1");
+          wrapper.dataset.pageNumber = String(i);
+          
+          const filter = getPageFilter(settings);
+          if (filter !== "none") wrapper.style.filter = filter;
+          
+          container.appendChild(wrapper);
+          pageDatas.push({ pageNum: i, pdfPage, viewport, wrapper });
+        }
+
+        // Placeholders are ready. If we re-rendered (e.g. from zoom/theme change), instantly restore the page we were on
+        if (pageDatas[page - 1]) {
+          pageDatas[page - 1].wrapper.scrollIntoView({ behavior: "instant", block: "start" });
+        }
+
+        // Pass 2: Render expensive canvas and layers asynchronously
+        for (const data of pageDatas) {
+          if (cancelled) return;
+          await renderPage(data.pageNum, data.wrapper, data.pdfPage, data.viewport);
         }
       } else if (displayMode === "double" || displayMode === "facing") {
         const row = document.createElement("div");
         row.className = "flex gap-4 items-start";
         container.appendChild(row);
         const startPage = displayMode === "facing" ? (page % 2 === 0 ? page - 1 : page) : page;
-        await renderPage(Math.max(1, startPage), row);
-        if (startPage + 1 <= totalPages) await renderPage(startPage + 1, row);
+        const p1 = await pdf.getPage(Math.max(1, startPage));
+        await renderPage(p1.pageNumber, row, p1, p1.getViewport({ scale: zoom, rotation }));
+        
+        if (startPage + 1 <= totalPages) {
+          const p2 = await pdf.getPage(startPage + 1);
+          await renderPage(p2.pageNumber, row, p2, p2.getViewport({ scale: zoom, rotation }));
+        }
       } else {
-        await renderPage(page, container);
+        const p1 = await pdf.getPage(page);
+        await renderPage(page, container, p1, p1.getViewport({ scale: zoom, rotation }));
       }
     };
 
     render().catch((error) => { if (!cancelled) console.error("Failed to render PDF page", error); });
-    return () => { cancelled = true; containerRef.current?.replaceChildren(); };
-  }, [page, pdf, totalPages, zoom, rotation, settings, displayMode, highlights, symbolAnnotations]);
+    return () => { cancelled = true; };
+  }, [renderTrigger, pdf, totalPages, zoom, rotation, settings, displayMode, highlights, symbolAnnotations]);
+
+  /* Scroll to page on external nav in continuous mode */
+  useEffect(() => {
+    if (displayMode === "continuous" && isUserScrolling.current && containerRef.current) {
+      const pageEl = containerRef.current.querySelector(`.pdf-page[data-page-number="${page}"]`);
+      if (pageEl) {
+        pageEl.scrollIntoView({ behavior: "auto", block: "start" });
+      }
+      isUserScrolling.current = false;
+    }
+  }, [page, displayMode]);
 
   /* Scroll-based page tracking for continuous mode */
   useEffect(() => {
@@ -508,7 +572,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         let topPage: number | null = null;
         let topY = Infinity;
         entries.forEach((entry) => {
-          if (entry.isIntersecting) {
+          if (entry.isIntersecting && !isUserScrolling.current) {
             const rect = entry.boundingClientRect;
             if (rect.top < topY) {
               topY = rect.top;
@@ -516,7 +580,9 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
             }
           }
         });
-        if (topPage) setPage(topPage);
+        if (topPage && !isUserScrolling.current) {
+           setPage(topPage);
+        }
       },
       { root: viewportRef.current, threshold: 0.1 },
     );
@@ -531,15 +597,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
       if (e.key === "ArrowRight" || e.key === "ArrowDown") {
         const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
-        setPage((p) => Math.min(totalPages, p + step));
+        navigateToPage((p) => Math.min(totalPages, p + step));
       } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
         const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
-        setPage((p) => Math.max(1, p - step));
+        navigateToPage((p) => Math.max(1, p - step));
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [totalPages, displayMode]);
+  }, [totalPages, displayMode, navigateToPage]);
 
   /* Ctrl+scroll zoom */
   useEffect(() => {
@@ -547,11 +613,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         setZoom((z) => Math.max(0.4, Math.min(3, z - e.deltaY * 0.002)));
+        if (settings.autoFitWidth) {
+          zoomBeforeFit.current = null; // discard saved zoom on manual override
+          setSettings((prev) => ({ ...prev, autoFitWidth: false }));
+        }
       }
     };
     document.addEventListener("wheel", handleWheel, { passive: false });
     return () => document.removeEventListener("wheel", handleWheel);
-  }, []);
+  }, [settings.autoFitWidth]);
 
   const handlePrint = useCallback(() => { if (pdf) printPdf(pdf); }, [pdf]);
   const handleRotate = useCallback(() => { setRotation((r) => (r + 90) % 360); }, []);
@@ -569,17 +639,30 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         totalPages={totalPages}
         onPrevPage={() => {
           const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
-          navigateToPage(Math.max(1, page - step));
+          navigateToPage((prev) => Math.max(1, prev - step));
         }}
         onNextPage={() => {
           const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
-          navigateToPage(Math.min(totalPages, page + step));
+          navigateToPage((prev) => Math.min(totalPages, prev + step));
         }}
         onPageJump={(p) => navigateToPage(p)}
         zoom={zoom}
-        onZoomIn={() => setZoom((z) => Math.min(3, z + 0.2))}
-        onZoomOut={() => setZoom((z) => Math.max(0.4, z - 0.2))}
+        onZoomIn={() => {
+          setZoom((z) => Math.min(3, z + 0.2));
+          if (settings.autoFitWidth) {
+            zoomBeforeFit.current = null;
+            setSettings({ ...settings, autoFitWidth: false });
+          }
+        }}
+        onZoomOut={() => {
+          setZoom((z) => Math.max(0.4, z - 0.2));
+          if (settings.autoFitWidth) {
+            zoomBeforeFit.current = null;
+            setSettings({ ...settings, autoFitWidth: false });
+          }
+        }}
         onFitWidth={handleFitWidth}
+        onToggleAutoFitWidth={handleToggleAutoFitWidth}
         settings={settings}
         onSettingsChange={setSettings}
         onPrint={handlePrint}
@@ -699,6 +782,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         currentPage={page} totalPages={totalPages}
         displayMode={displayMode} onDisplayModeChange={setDisplayMode}
         zoom={zoom}
+        onPageJump={(p) => navigateToPage(p)}
       />
     </div>
   );

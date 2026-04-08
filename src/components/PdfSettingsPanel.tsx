@@ -31,7 +31,7 @@ const defaultSettings: PdfSettings = {
   invertColors: false,
   showAnnotations: true,
   continuousScroll: false,
-  autoFitWidth: true,
+  autoFitWidth: false,
   highlightLinks: true,
   enableTextSelection: true,
 };

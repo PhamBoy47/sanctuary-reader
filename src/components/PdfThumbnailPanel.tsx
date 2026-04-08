@@ -32,7 +32,7 @@ export function PdfThumbnailPanel({ pdf, currentPage, onPageSelect, isOpen }: Pd
           canvas.height = viewport.height;
           const ctx = canvas.getContext("2d");
           if (!ctx) { thumbs.push(""); continue; }
-          await page.render({ canvasContext: ctx, viewport }).promise;
+          await page.render({ canvasContext: ctx, viewport, canvas }).promise;
           thumbs.push(canvas.toDataURL("image/jpeg", 0.6));
         } catch {
           thumbs.push("");
