@@ -266,6 +266,14 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
   useEffect(() => { if (settings.autoFitWidth) handleFitWidth(); }, [settings.autoFitWidth, handleFitWidth]);
 
+  /* Auto-fit on resize */
+  useEffect(() => {
+    if (!settings.autoFitWidth || !viewportRef.current) return;
+    const ro = new ResizeObserver(() => handleFitWidth());
+    ro.observe(viewportRef.current);
+    return () => ro.disconnect();
+  }, [settings.autoFitWidth, handleFitWidth]);
+
   /* Search */
   const handleSearch = useCallback(async (query: string) => {
     if (!pdf || !query.trim()) { setSearchResults([]); setCurrentResultIdx(0); return; }
