@@ -126,7 +126,9 @@
   position: absolute;
   white-space: pre;
   cursor: text;
-  transform-origin: 0 0;
+  transform-origin: 0% 0%;
+  line-height: 1;
+  pointer-events: all;
 }
 
 .textLayer span.markedContent {
