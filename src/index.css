@@ -148,7 +148,12 @@
 }
 
 .textLayer ::selection {
-  background: rgba(6, 58, 164, 0.4);
+  background: rgba(6, 58, 164, 0.35);
+  mix-blend-mode: multiply;
+}
+
+.textLayer span {
+  pointer-events: all;
 }
 
 /* Search highlights — #98FF98 mint green */

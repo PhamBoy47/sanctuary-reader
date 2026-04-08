@@ -11,12 +11,16 @@ interface EpubViewerProps {
   onBack: () => void;
 }
 
-type ThemeMode = "light" | "sepia" | "dark";
+type ThemeMode = "original" | "light" | "sepia" | "warm" | "cool" | "dark" | "midnight";
 
-const themes: Record<ThemeMode, { bg: string; fg: string }> = {
-  light: { bg: "#faf9f6", fg: "#1a1a1a" },
-  sepia: { bg: "#f4ecd8", fg: "#5b4636" },
-  dark: { bg: "#141a24", fg: "#d4cfc4" },
+const themes: Record<ThemeMode, { bg: string; fg: string; label: string }> = {
+  original: { bg: "#ffffff", fg: "#000000", label: "Original" },
+  light: { bg: "#faf9f6", fg: "#1a1a1a", label: "Light" },
+  sepia: { bg: "#f4ecd8", fg: "#5b4636", label: "Sepia" },
+  warm: { bg: "#fdf6e3", fg: "#3e2723", label: "Warm" },
+  cool: { bg: "#e8eaf6", fg: "#1a237e", label: "Cool" },
+  dark: { bg: "#141a24", fg: "#d4cfc4", label: "Dark" },
+  midnight: { bg: "#0a0e14", fg: "#b0bec5", label: "Midnight" },
 };
 
 interface EpubTocItem extends TocItem {
