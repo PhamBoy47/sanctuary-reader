@@ -71,13 +71,16 @@
   ::-webkit-scrollbar {
     width: 6px;
   }
+
   ::-webkit-scrollbar-track {
     background: hsl(var(--background));
   }
+
   ::-webkit-scrollbar-thumb {
     background: hsl(var(--muted-foreground) / 0.3);
     border-radius: 3px;
   }
+
   ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground) / 0.5);
   }
@@ -86,7 +89,7 @@
 @layer utilities {
   .sanctuary-glow {
     box-shadow: 0 0 30px -5px hsl(var(--sanctuary-glow) / 0.15),
-                0 0 60px -15px hsl(var(--sanctuary-glow) / 0.1);
+      0 0 60px -15px hsl(var(--sanctuary-glow) / 0.1);
   }
 
   .sanctuary-gradient {
@@ -100,66 +103,158 @@
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   PDF PAGE WRAPPERS
+   Wrappers are permanent DOM nodes — never destroyed on zoom. Only their
+   width/height inline styles change. This keeps the scrollbar accurate
+   and prevents layout-jump when re-rendering at a new zoom level.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 .pdf-page {
   position: relative;
   flex: 0 0 auto;
   overflow: hidden;
   border-radius: calc(var(--radius) - 0.2rem);
   background: hsl(var(--card));
-  box-shadow: 0 32px 80px -40px hsl(var(--background) / 0.85);
+  box-shadow:
+    0 4px 6px -1px rgb(0 0 0 / 0.1),
+    0 2px 4px -2px rgb(0 0 0 / 0.1);
+  /* Smooth shadow on hover without triggering layout */
+  transition: box-shadow 0.2s;
+  /* GPU-composite the page so scroll repaints don't repaint all children */
+  will-change: contents;
 }
+
+.pdf-page:hover {
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CANVAS
+   Sits at z-index 1 — below the text layer and all overlay layers.
+   ═══════════════════════════════════════════════════════════════════════ */
 
 .pdf-canvas {
   display: block;
   position: absolute;
   top: 0;
   left: 0;
+  z-index: 1;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   TEXT LAYER  (FIX 2)
+   Tailwind's preflight resets line-height via `*` and `body`, which
+   causes pdf.js span bounding boxes to drift from the PDF coordinate
+   system — selecting one line visually selects the lines above/below it.
 
+   The three critical properties are:
+     line-height: 1          — span height = font-size, nothing more
+     transform-origin: 0% 0% — matches the PDF baseline origin pdf.js uses
+     color: transparent      — spans are invisible; only selection is shown
 
-/* Search highlights */
-.pdf-search-highlight {
-  background: rgb(248 134 5) !important;
+   These are marked !important so they survive any Tailwind layer order.
+   renderPage() also applies them as inline styles after TextLayer.render()
+   as a belt-and-suspenders guard for spans created outside that window.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.textLayer {
+  position: absolute !important;
+  inset: 0;
+  overflow: hidden;
+  z-index: 2 !important;
+  line-height: 1 !important;
+
+  /* ──── THE FIX ──── */
+  opacity: 0.25 !important;
+  /* Control the overall selection strength here */
+  mix-blend-mode: multiply;
+  /* Makes it blend like a real highlighter */
+  /* ───────────────── */
+}
+
+.textLayer span,
+.textLayer br {
+  /* ── The critical triad ── */
+  line-height: 1 !important;
+  transform-origin: 0% 0% !important;
   color: transparent !important;
-  border-radius: 2px;
+
+  /* ── Structural properties ── */
+  position: absolute !important;
+  white-space: pre !important;
+  cursor: text !important;
+  pointer-events: auto !important;
+
+  /* ── Reset any Tailwind prose/typography plugin margins ── */
+  margin: 0 !important;
+  padding: 0 !important;
 }
+
+/* Selection colour — translucent so annotation highlights show through */
+.textLayer ::selection {
+  /* Use a SOLID color here. NO transparent (rgba) values. */
+  /* This prevents the "darker blocks" because solid colors don't stack. */
+  background: rgb(59, 130, 246);
+  color: transparent;
+}
+
+.textLayer ::-moz-selection {
+  background: rgb(59, 130, 246);
+  color: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   OVERLAY LAYERS  (FIX 5)
+   .highlight-layer  — user annotation highlights (stored rects from DB)
+   .search-highlight-layer — live search match highlights
+
+   Both are absolutely-positioned siblings of .textLayer inside .pdf-page.
+   They contain only <div> rects — never span/text nodes — so pdf.js
+   coordinate mappings inside .textLayer are never touched or broken.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.highlight-layer,
+.search-highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Above textLayer (2) and annotationLayer (3), below symbol-layer (5) */
+  z-index: 4;
+  /* Prevent any inherited line-height from skewing child rect measurements */
+  line-height: 0;
+  font-size: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SEARCH HIGHLIGHT COLOURS
+   Used by PdfSearchBar and any legacy code referencing these class names.
+   The new overlay rects set Tailwind utilities inline; these rules cover
+   any component that still generates the old class-based highlights.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.pdf-search-highlight {
+  background: rgb(248 134 5 / 0.45) !important;
+  border-radius: 0px;
+}
+
 .pdf-search-highlight.active {
-  background: rgb(248 134 5) !important;
+  background: rgb(248 134 5 / 0.65) !important;
   outline: 2px solid rgb(248 134 5);
   outline-offset: 1px;
 }
 
-/* EPUB search highlights */
+/* ── EPUB highlights (unchanged) ───────────────────────────────────── */
+
 .epub-search-highlight {
   background: rgb(248 134 5) !important;
-  border-radius: 2px;
+  border-radius: 0px;
 }
+
 .epub-search-highlight.active {
   background: rgb(248 134 5) !important;
   outline: 2px solid rgb(248 134 5);
   outline-offset: 1px;
 }
-
-/* Ensure text selection works above the canvas */
-.textLayer {
-  z-index: 2 !important;
-  opacity: 1 !important;
-}
-
-.textLayer span {
-  color: transparent !important;
-  pointer-events: auto !important;
-  cursor: text !important;
-}
-
-.textLayer ::selection {
-  background: rgba(7, 59, 166, 0.2);
-}
-.textLayer ::-moz-selection {
-  background: rgba(7, 59, 166, 0.2);
-}
-
-
-
-

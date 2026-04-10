@@ -166,7 +166,21 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
   const zoomBeforeFit = useRef<number | null>(null);
-  const isRenderingRef = useRef(false);
+
+  // FIX 3 & 4: Removed isRenderingRef entirely — it was gating the scroll observer
+  // and causing the race condition. All rendering is now fire-and-forget; the
+  // scroll observer only gates on isNavigating.current for programmatic jumps.
+
+  // FIX 4: Single canonical set of refs (duplicates removed from below)
+  const renderedPagesRef = useRef<Set<number>>(new Set());
+  const abortControllersRef = useRef<Map<number, AbortController>>(new Map());
+
+  // FIX 4: Initialize with first 3 pages so initial render isn't blank
+  const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set([1, 2, 3]));
+
+  // FIX 6: Scroll anchor — saves which page + fractional offset within that page
+  // so we can restore the visual scroll position after a zoom/rotation rebuild.
+  const scrollAnchorRef = useRef<{ pageNum: number; offsetFraction: number } | null>(null);
 
   // Reading progress persistence
   useEffect(() => {
@@ -176,7 +190,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         const p = parseInt(savedPage, 10);
         if (p > 0 && p <= pdf.numPages) {
           setPage(p);
-          // Force scroll to current page on load
           isNavigating.current = true;
         }
       }
@@ -198,6 +211,9 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const isNavJump = useRef(false);
   const isNavigating = useRef(false);
 
+  // FIX 1: showSearch is pure UI state — toggling it must NOT trigger any
+  // effect that touches containerRef or resetss scroll. We ensure this by
+  // keeping it out of every effect dependency array that touches the DOM.
   const [showSearch, setShowSearch] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [currentResultIdx, setCurrentResultIdx] = useState(0);
@@ -208,8 +224,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [activeSymbol, setActiveSymbol] = useState("⭐");
   const [placingSymbol, setPlacingSymbol] = useState(false);
 
-  // For re-rendering overlay annotations
-   const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [symbolAnnotations, setSymbolAnnotations] = useState<SymbolAnnotation[]>([]);
   const [annotationVersion, setAnnotationVersion] = useState(0);
   const [placeholdersVersion, setPlaceholdersVersion] = useState(0);
@@ -225,15 +240,22 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
   useEffect(() => { reloadAnnotations(); }, [reloadAnnotations, annotationVersion]);
 
-  /* Load PDF */
+  /* Load PDF — depends only on file.data so new-file changes are isolated */
   useEffect(() => {
     let cancelled = false;
+    // Reset all per-document state when file changes
+    renderedPagesRef.current.clear();
+    abortControllersRef.current.forEach(c => c.abort());
+    abortControllersRef.current.clear();
+    scrollAnchorRef.current = null;
+
     const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(file.data) });
     loadingTask.promise
       .then(async (doc) => {
         if (cancelled) return;
         setPdf(doc);
         setTotalPages(doc.numPages);
+        setPage(1);
         const outline = await doc.getOutline();
         if (!cancelled) setTocItems(outline ? await mapPdfOutlineItems(doc, outline) : []);
       })
@@ -301,14 +323,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setZoom(Math.max(0.4, Math.min(3, availableWidth / baseViewport.width)));
   }, [page, pdf]);
 
-  /* Handle autoFitWidth toggle: save zoom before fitting, restore when toggling off */
   const handleToggleAutoFitWidth = useCallback(() => {
     if (!settings.autoFitWidth) {
-      // Turning ON — save current zoom for later restore
       zoomBeforeFit.current = zoom;
       setSettings((prev) => ({ ...prev, autoFitWidth: true }));
     } else {
-      // Turning OFF — restore previous zoom
       if (zoomBeforeFit.current !== null) {
         setZoom(zoomBeforeFit.current);
         zoomBeforeFit.current = null;
@@ -319,7 +338,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
   useEffect(() => { if (settings.autoFitWidth) handleFitWidth(); }, [settings.autoFitWidth, handleFitWidth]);
 
-  /* Auto-fit on resize */
   useEffect(() => {
     if (!settings.autoFitWidth || !viewportRef.current) return;
     const ro = new ResizeObserver(() => handleFitWidth());
@@ -334,7 +352,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     const results = await searchPdf(pdf, query);
     setSearchResults(results);
     setCurrentResultIdx(results.length > 0 ? 1 : 0);
-    if (results.length > 0) navigateToPage(results[0].page);
+    // Only navigate if the first result is on a DIFFERENT page to prevent reset loops
+    if (results.length > 0 && results[0].page !== pageRef.current) {
+      navigateToPage(results[0].page);
+    }
   }, [pdf, navigateToPage]);
 
   const handleNextResult = useCallback(() => {
@@ -350,6 +371,16 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setCurrentResultIdx(prev);
     navigateToPage(searchResults[prev - 1].page);
   }, [searchResults, currentResultIdx, navigateToPage]);
+
+  // FIX 1 + FIX 5: When the search query changes we only need to redraw the
+  // highlight overlay — we must NOT clear renderedPagesRef (that would cause
+  // the structural effect to re-render all page canvases and jump scroll to
+  // the top). The overlay effect below is the sole owner of search highlights.
+  // (Removed the old `renderedPagesRef.current.clear()` call that was here.)
+  useEffect(() => {
+    // Only bump annotation version to trigger overlay redraw, nothing else.
+    setAnnotationVersion(v => v + 1);
+  }, [searchQuery]);
 
   const handleSearchFromContext = useCallback((text: string) => {
     setShowSearch(true);
@@ -385,14 +416,29 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setAnnotationVersion((v) => v + 1);
   }, [placingSymbol, file.id, activeSymbol]);
 
-  /* Render pages */
+  /* Render pages (Structural & Canvas) */
   const renderTrigger = displayMode === "continuous" ? "all" : String(page);
-  useEffect(() => {
-    if (!pdf || !containerRef.current) return;
-    let cancelled = false;
 
-    const renderPage = async (pageNum: number, wrapper: HTMLElement, pdfPage: pdfjsLib.PDFPageProxy, viewport: pdfjsLib.PageViewport) => {
-      const outputScale = window.devicePixelRatio || 1;
+  // ─── Core Render Function (Imperative) ──────────────────────────────────────
+  // FIX 2: Text layer spans get explicit inline styles for line-height,
+  // transform-origin, and color so Tailwind's global resets can't override
+  // the pdf.js coordinate system. This prevents multi-line selection bleed.
+  const renderPage = useCallback(async (pageNum: number, wrapper: HTMLElement, outputScale: number) => {
+    if (!pdf) return;
+
+    // Cancel any in-flight render for this page
+    if (abortControllersRef.current.has(pageNum)) {
+      abortControllersRef.current.get(pageNum)?.abort();
+    }
+    const controller = new AbortController();
+    abortControllersRef.current.set(pageNum, controller);
+
+    try {
+      const pdfPage = await pdf.getPage(pageNum);
+      const viewport = pdfPage.getViewport({ scale: zoom, rotation });
+
+      // FIX 6: Only remove canvas/layer children — never remove the wrapper itself
+      wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
 
       const canvas = document.createElement("canvas");
       canvas.className = "pdf-canvas";
@@ -404,16 +450,17 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if (!ctx) return;
       wrapper.appendChild(canvas);
 
-      /* Text layer */
       if (settings.enableTextSelection) {
         const textDiv = document.createElement("div");
         textDiv.className = "textLayer";
+        // FIX 2: Explicit dimensions so the layer matches the canvas pixel-perfect
+        textDiv.style.width = `${viewport.width}px`;
+        textDiv.style.height = `${viewport.height}px`;
         textDiv.style.setProperty("--scale-factor", String(viewport.scale));
         textDiv.style.setProperty("--total-scale-factor", String(viewport.scale));
         wrapper.appendChild(textDiv);
       }
 
-      /* Annotation layer */
       if (settings.showAnnotations) {
         const annotationDiv = document.createElement("div");
         annotationDiv.className = "annotationLayer";
@@ -421,33 +468,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         wrapper.appendChild(annotationDiv);
       }
 
-      /* Highlight overlays */
-      const pageHighlights = highlights.filter((h) => h.page === pageNum);
-      if (pageHighlights.length > 0) {
-        const hlOverlay = document.createElement("div");
-        hlOverlay.className = "absolute inset-0 pointer-events-none z-[4]";
-        pageHighlights.forEach((hl) => {
-          hl.rects.forEach((r) => {
-            const el = document.createElement("div");
-            el.className = "absolute rounded-sm";
-            el.style.left = `${r.x * 100}%`;
-            el.style.top = `${r.y * 100}%`;
-            el.style.width = `${r.w * 100}%`;
-            el.style.height = `${r.h * 100}%`;
-            el.style.backgroundColor = hl.color;
-            el.style.opacity = "0.35";
-            el.style.mixBlendMode = "multiply";
-            hlOverlay.appendChild(el);
-          });
-        });
-        wrapper.appendChild(hlOverlay);
-      }
-
-      /* Symbol overlays */
+      // Symbol overlays
       const pageSymbols = symbolAnnotations.filter((s) => s.page === pageNum);
       if (pageSymbols.length > 0) {
         const symOverlay = document.createElement("div");
-        symOverlay.className = "absolute inset-0 pointer-events-none z-[5]";
+        symOverlay.className = "symbol-layer absolute inset-0 pointer-events-none z-[5]";
         pageSymbols.forEach((s) => {
           const el = document.createElement("div");
           el.className = "absolute text-lg";
@@ -460,8 +485,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         wrapper.appendChild(symOverlay);
       }
 
-
-      if (cancelled) return;
+      if (controller.signal.aborted) return;
 
       const renderTask = pdfPage.render({
         annotationMode: settings.showAnnotations ? pdfjsLib.AnnotationMode.ENABLE_FORMS : pdfjsLib.AnnotationMode.DISABLE,
@@ -472,12 +496,14 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       });
       await renderTask.promise;
 
-      /* Render text layer */
+      if (controller.signal.aborted) return;
+
       if (settings.enableTextSelection) {
         const textDiv = wrapper.querySelector(".textLayer") as HTMLDivElement;
         if (textDiv) {
           const textContent = await pdfPage.getTextContent();
-          if (cancelled) return;
+          if (controller.signal.aborted) return;
+
           const textLayer = new pdfjsLib.TextLayer({
             container: textDiv,
             textContentSource: textContent,
@@ -485,146 +511,362 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           });
           await textLayer.render();
 
-          /* Search highlight overlays */
-          if (searchQuery.trim() !== "") {
-            const lowerQuery = searchQuery.toLowerCase();
-            const walker = document.createTreeWalker(textDiv, NodeFilter.SHOW_TEXT);
-            let node = walker.nextNode();
-            const textNodes: Text[] = [];
-            while (node) {
-              textNodes.push(node as Text);
-              node = walker.nextNode();
-            }
-
-            textNodes.forEach((textNode) => {
-              const parent = textNode.parentNode;
-              if (!parent) return;
-              const txt = textNode.nodeValue || "";
-              
-              const lowerTxt = txt.toLowerCase();
-              let startIndex = 0;
-              let foundIndex = lowerTxt.indexOf(lowerQuery, startIndex);
-              if (foundIndex === -1) return;
-
-              const fragment = document.createDocumentFragment();
-              let lastIndex = 0;
-
-              while (foundIndex !== -1) {
-                fragment.appendChild(document.createTextNode(txt.substring(lastIndex, foundIndex)));
-                const mark = document.createElement("mark");
-                mark.className = "pdf-search-highlight";
-                mark.textContent = txt.substring(foundIndex, foundIndex + lowerQuery.length);
-                fragment.appendChild(mark);
-
-                lastIndex = foundIndex + lowerQuery.length;
-                startIndex = lastIndex;
-                foundIndex = lowerTxt.indexOf(lowerQuery, startIndex);
-              }
-              fragment.appendChild(document.createTextNode(txt.substring(lastIndex)));
-              parent.replaceChild(fragment, textNode);
-            });
-          }
+          // FIX 2: After pdf.js renders span elements, enforce critical styles
+          // inline so Tailwind base resets (which set line-height on * or body)
+          // cannot bleed through and misalign the hit-boxes. These must be
+          // applied AFTER render() because pdf.js creates the spans during render.
+          textDiv.querySelectorAll<HTMLElement>("span, br").forEach((span) => {
+            span.style.lineHeight = "1";
+            span.style.transformOrigin = "0% 0%";
+            span.style.color = "transparent";
+            span.style.whiteSpace = "pre";
+            span.style.cursor = "text";
+            span.style.position = "absolute";
+          });
         }
       }
 
-      /* Render annotation layer */
       if (settings.showAnnotations) {
         const annotationDiv = wrapper.querySelector(".annotationLayer") as HTMLDivElement;
         if (annotationDiv) {
           const annotations = await pdfPage.getAnnotations();
-          if (cancelled || annotations.length === 0) {
+          if (controller.signal.aborted || annotations.length === 0) {
             annotationDiv.hidden = annotations.length === 0;
-            return;
+          } else {
+            const linkService = createPdfLinkService(pdf!, navigateToPage as any, totalPages) as any;
+            const annotationLayer = new pdfjsLib.AnnotationLayer({
+              div: annotationDiv,
+              page: pdfPage,
+              viewport: viewport.clone({ dontFlip: true }),
+              linkService,
+              annotationStorage: (pdf as any).annotationStorage,
+            } as any);
+            await annotationLayer.render({
+              annotations,
+              viewport: viewport.clone({ dontFlip: true }),
+              div: annotationDiv,
+              page: pdfPage,
+              linkService,
+              renderForms: true,
+            } as any);
           }
-          const linkService = createPdfLinkService(pdf!, navigateToPage as any, totalPages) as any;
-          const annotationLayer = new pdfjsLib.AnnotationLayer({
-            div: annotationDiv,
-            page: pdfPage,
-            viewport: viewport.clone({ dontFlip: true }),
-            linkService,
-            annotationStorage: (pdf as any).annotationStorage,
-          } as any);
-          await annotationLayer.render({
-            annotations,
-            viewport: viewport.clone({ dontFlip: true }),
-            div: annotationDiv,
-            page: pdfPage,
-            linkService,
-            renderForms: true,
-          } as any);
         }
       }
-    };
 
-    const render = async () => {
-      const container = containerRef.current;
-      if (!container) return;
-      isRenderingRef.current = true;
-      container.replaceChildren();
+      renderedPagesRef.current.add(pageNum);
+    } catch (err) {
+      if ((err as Error).name !== 'RenderingCancelledException') {
+        console.error(`Error rendering page ${pageNum}:`, err);
+      }
+    }
+  }, [pdf, zoom, rotation, settings, symbolAnnotations, navigateToPage, totalPages]);
 
-      // Snapshot the page we want to preserve — use ref to avoid stale closure
-      const targetPage = pageRef.current;
+  // Synchronize a stable ref for callbacks that run outside the React cycle (virtualization)
+  const renderPageRef = useRef(renderPage);
+  useEffect(() => { renderPageRef.current = renderPage; }, [renderPage]);
 
-      /* Pre-create placeholders for continuous mode to fix scroll jumping and observers */
+  // ─── FIX 6: Save scroll anchor before a layout-affecting rebuild ──────────
+  // Finds which page is currently at the top of the viewport and what fraction
+  // of that page's height is above the fold, so we can restore the same visual
+  // position after dimensions change.
+  const saveScrollAnchor = useCallback(() => {
+    if (!viewportRef.current || !containerRef.current) return;
+    const scrollTop = viewportRef.current.scrollTop;
+    const pages = containerRef.current.querySelectorAll<HTMLElement>(".pdf-page");
+    for (const el of pages) {
+      const top = el.offsetTop;
+      const height = el.offsetHeight;
+      if (top + height > scrollTop) {
+        scrollAnchorRef.current = {
+          pageNum: Number(el.dataset.pageNumber),
+          offsetFraction: height > 0 ? (scrollTop - top) / height : 0,
+        };
+        return;
+      }
+    }
+  }, []);
+
+  // ─── Structural Effect ────────────────────────────────────────────────────
+  // Runs when zoom / rotation / displayMode / pdf / totalPages change.
+  // FIX 6: In continuous mode we NEVER call replaceChildren when wrappers
+  // already exist at the right count. We update wrapper dimensions in-place
+  // and invalidate only the canvases whose dimensions changed, then restore
+  // the scroll offset via the anchor saved before the rebuild.
+  useEffect(() => {
+    if (!pdf || !containerRef.current) return;
+    const container = containerRef.current;
+    let cancelled = false;
+
+    const buildStructure = async () => {
+      const outputScale = window.devicePixelRatio || 1;
+
       if (displayMode === "continuous") {
-        const pageDatas = [];
-        // Pass 1: Get metadata and create placeholders
+        // Save position BEFORE any layout mutation
+        saveScrollAnchor();
+
+        // Build a map of existing wrappers so we can reuse them
+        const existingMap = new Map<number, HTMLElement>();
+        container.querySelectorAll<HTMLElement>(".pdf-page").forEach(el => {
+          existingMap.set(Number(el.dataset.pageNumber), el);
+        });
+
+        // Only nuke and rebuild from scratch if page-count changed (new file)
+        if (existingMap.size !== totalPages) {
+          container.replaceChildren();
+          renderedPagesRef.current.clear();
+          abortControllersRef.current.forEach(c => c.abort());
+          abortControllersRef.current.clear();
+          existingMap.clear();
+        }
+
+        // Update/create wrappers for every page
         for (let i = 1; i <= totalPages; i++) {
           if (cancelled) return;
           const pdfPage = await pdf.getPage(i);
           const viewport = pdfPage.getViewport({ scale: zoom, rotation });
-          
-          const wrapper = document.createElement("div");
-          wrapper.className = "pdf-page relative overflow-hidden bg-muted/5";
-          wrapper.style.width = `${viewport.width}px`;
-          wrapper.style.height = `${viewport.height}px`;
+
+          let wrapper = existingMap.get(i);
+          const isNew = !wrapper;
+          if (!wrapper) {
+            wrapper = document.createElement("div");
+            wrapper.className = "pdf-page relative overflow-hidden bg-muted/5";
+            wrapper.dataset.pageNumber = String(i);
+            container.appendChild(wrapper);
+          }
+
+          const newW = `${viewport.width}px`;
+          const newH = `${viewport.height}px`;
+          const dimensionsChanged = wrapper.style.width !== newW || wrapper.style.height !== newH;
+
+          wrapper.style.width = newW;
+          wrapper.style.height = newH;
           wrapper.style.setProperty("--scale-factor", String(viewport.scale));
           wrapper.style.setProperty("--total-scale-factor", String(viewport.scale));
           wrapper.style.setProperty("--user-unit", "1");
-          wrapper.dataset.pageNumber = String(i);
-          
+
           const filter = getPageFilter(settings);
-          if (filter !== "none") wrapper.style.filter = filter;
-          
-          container.appendChild(wrapper);
-          pageDatas.push({ pageNum: i, pdfPage, viewport, wrapper });
+          wrapper.style.filter = filter !== "none" ? filter : "";
+
+          // FIX 6: If dimensions changed (zoom/rotation), invalidate canvases
+          // for this wrapper so the scroll handler re-renders them. We do NOT
+          // destroy the wrapper itself — the DOM node stays, preserving layout.
+          if (!isNew && dimensionsChanged) {
+            wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
+            renderedPagesRef.current.delete(i);
+            if (abortControllersRef.current.has(i)) {
+              abortControllersRef.current.get(i)?.abort();
+              abortControllersRef.current.delete(i);
+            }
+          }
         }
+
         setPlaceholdersVersion((v) => v + 1);
 
-        // Placeholders are ready. Restore scroll to the page we were on before re-render
-        if (pageDatas[targetPage - 1]) {
-          pageDatas[targetPage - 1].wrapper.scrollIntoView({ behavior: "instant", block: "start" });
+        // FIX 6: Restore scroll position synchronously in the next frame
+        // (after the browser has applied the new layout dimensions)
+        if (scrollAnchorRef.current) {
+          const { pageNum, offsetFraction } = scrollAnchorRef.current;
+          requestAnimationFrame(() => {
+            const anchorEl = container.querySelector<HTMLElement>(`[data-page-number="${pageNum}"]`);
+            if (anchorEl && viewportRef.current) {
+              viewportRef.current.scrollTop =
+                anchorEl.offsetTop + anchorEl.offsetHeight * offsetFraction;
+            }
+            scrollAnchorRef.current = null;
+          });
         }
 
-        // Pass 2: Render expensive canvas and layers asynchronously
-        for (const data of pageDatas) {
+        // Render pages that are already in the virtual window
+        const wrappers = container.querySelectorAll<HTMLElement>(".pdf-page");
+        for (const p of visiblePages) {
           if (cancelled) return;
-          await renderPage(data.pageNum, data.wrapper, data.pdfPage, data.viewport);
+          const w = wrappers[p - 1];
+          if (w && !renderedPagesRef.current.has(p)) {
+            renderPage(p, w, outputScale);
+          }
         }
-      } else if (displayMode === "twopage") {
-        const row = document.createElement("div");
-        row.className = "flex gap-4 items-start";
-        container.appendChild(row);
-        const startPage = targetPage % 2 === 0 ? targetPage - 1 : targetPage;
-        const p1 = await pdf.getPage(Math.max(1, startPage));
-        await renderPage(p1.pageNumber, row, p1, p1.getViewport({ scale: zoom, rotation }));
-        
-        if (startPage + 1 <= totalPages) {
-          const p2 = await pdf.getPage(startPage + 1);
-          await renderPage(p2.pageNumber, row, p2, p2.getViewport({ scale: zoom, rotation }));
-        }
-      } else {
-        const p1 = await pdf.getPage(targetPage);
-        await renderPage(targetPage, container, p1, p1.getViewport({ scale: zoom, rotation }));
-      }
 
-      // Allow observer to resume after render settles
-      requestAnimationFrame(() => { isRenderingRef.current = false; });
+      } else {
+        // Single / two-page mode: always rebuild (small DOM, no perf concern)
+        container.replaceChildren();
+        renderedPagesRef.current.clear();
+        abortControllersRef.current.forEach(c => c.abort());
+        abortControllersRef.current.clear();
+
+        if (displayMode === "twopage") {
+          const row = document.createElement("div");
+          row.className = "flex gap-4 items-start";
+          container.appendChild(row);
+          const startPage = page % 2 === 0 ? page - 1 : page;
+
+          const p1 = await pdf.getPage(startPage);
+          const vp1 = p1.getViewport({ scale: zoom, rotation });
+          const wrapper1 = document.createElement("div");
+          wrapper1.className = "pdf-page relative overflow-hidden bg-muted/5";
+          wrapper1.dataset.pageNumber = String(startPage);
+          wrapper1.style.width = `${vp1.width}px`;
+          wrapper1.style.height = `${vp1.height}px`;
+          row.appendChild(wrapper1);
+          renderPage(startPage, wrapper1, outputScale);
+
+          if (startPage + 1 <= totalPages) {
+            const p2 = await pdf.getPage(startPage + 1);
+            const vp2 = p2.getViewport({ scale: zoom, rotation });
+            const wrapper2 = document.createElement("div");
+            wrapper2.className = "pdf-page relative overflow-hidden bg-muted/5";
+            wrapper2.dataset.pageNumber = String(startPage + 1);
+            wrapper2.style.width = `${vp2.width}px`;
+            wrapper2.style.height = `${vp2.height}px`;
+            row.appendChild(wrapper2);
+            renderPage(startPage + 1, wrapper2, outputScale);
+          }
+        } else {
+          const p = await pdf.getPage(page);
+          const vp = p.getViewport({ scale: zoom, rotation });
+          const wrapper = document.createElement("div");
+          wrapper.className = "pdf-page relative overflow-hidden bg-muted/5";
+          wrapper.dataset.pageNumber = String(page);
+          wrapper.style.width = `${vp.width}px`;
+          wrapper.style.height = `${vp.height}px`;
+          container.appendChild(wrapper);
+          renderPage(page, wrapper, outputScale);
+        }
+      }
     };
 
-    render().catch((error) => { if (!cancelled) console.error("Failed to render PDF page", error); });
-    return () => { cancelled = true; isRenderingRef.current = false; };
-  }, [renderTrigger, pdf, totalPages, zoom, rotation, settings, displayMode, highlights, symbolAnnotations, navigateToPage, searchQuery]);
+    buildStructure();
+    return () => { cancelled = true; };
+  }, [displayMode, zoom, rotation, pdf, totalPages, renderTrigger, settings.brightness, settings.invertColors, settings.pageBackground]);
+
+  // ─── FIX 5: Isolated Search & Highlight Overlay Effect ───────────────────
+  // This effect manages two absolutely-positioned overlay divs per page:
+  //   • .highlight-layer  — user annotation highlights (stored in DB)
+  //   • .search-highlight-layer — live search match highlights
+  // It does NOT modify any span inside .textLayer, so pdf.js internal
+  // coordinate mappings remain intact.
+  useEffect(() => {
+    if (!pdf || !containerRef.current) return;
+    let cancelled = false;
+
+    const drawOverlays = async () => {
+      const container = containerRef.current;
+      if (!container) return;
+      const wrappers = container.querySelectorAll<HTMLElement>(".pdf-page");
+
+      for (const wrapper of wrappers) {
+        if (cancelled) return;
+        const pageNum = Number(wrapper.dataset.pageNumber);
+
+        // Remove stale overlay layers only — never touch canvas or textLayer
+        wrapper.querySelectorAll('.highlight-layer, .search-highlight-layer').forEach(el => el.remove());
+
+        // Skip off-screen pages in continuous mode to avoid unnecessary work
+        if (displayMode === "continuous" && !visiblePages.has(pageNum)) continue;
+
+        const pdfPage = await pdf.getPage(pageNum);
+        const viewport = pdfPage.getViewport({ scale: zoom, rotation });
+
+        // ── User annotation highlights ──
+        const pageHighlights = highlights.filter((h) => h.page === pageNum);
+        if (pageHighlights.length > 0) {
+          const hlOverlay = document.createElement("div");
+          hlOverlay.className = "highlight-layer absolute inset-0 pointer-events-none z-[4]";
+          pageHighlights.forEach((hl) => {
+            hl.rects.forEach((r) => {
+              const el = document.createElement("div");
+              el.className = "absolute rounded-sm";
+              el.style.left = `${r.x * 100}%`;
+              el.style.top = `${r.y * 100}%`;
+              el.style.width = `${r.w * 100}%`;
+              el.style.height = `${r.h * 100}%`;
+              el.style.backgroundColor = hl.color;
+              el.style.opacity = "0.35";
+              el.style.mixBlendMode = "multiply";
+              hlOverlay.appendChild(el);
+            });
+          });
+          wrapper.appendChild(hlOverlay);
+        }
+
+        // ── Search match highlights ──
+        // FIX 5: We compute bounding rectangles from the pdf.js text content
+        // transform matrix and draw isolated <div> rectangles in a sibling
+        // overlay — never touching or wrapping spans inside .textLayer.
+        if (searchQuery.trim() !== "") {
+          const searchOverlay = document.createElement("div");
+          searchOverlay.className = "search-highlight-layer absolute inset-0 pointer-events-none z-[4]";
+          let hasMatch = false;
+
+          const textContent = await pdfPage.getTextContent();
+          if (cancelled) return;
+
+          const fullText = textContent.items.map((it: any) => it.str).join("");
+          const lowerFull = fullText.toLowerCase();
+          const lowerQ = searchQuery.toLowerCase();
+
+          // Build item offset map once
+          const offsets: number[] = [];
+          let cursor = 0;
+          textContent.items.forEach((it: any) => {
+            offsets.push(cursor);
+            cursor += (it.str || "").length;
+          });
+
+          let pos = lowerFull.indexOf(lowerQ);
+          while (pos !== -1) {
+            hasMatch = true;
+            const matchEnd = pos + lowerQ.length;
+
+            // Find all items that intersect with this match [pos, matchEnd]
+            for (let i = 0; i < textContent.items.length; i++) {
+              const item = textContent.items[i] as any;
+              const itemStart = offsets[i];
+              const itemEnd = itemStart + (item.str || "").length;
+
+              // Check for intersection
+              const overlapStart = Math.max(pos, itemStart);
+              const overlapEnd = Math.min(matchEnd, itemEnd);
+
+              if (overlapStart < overlapEnd) {
+                // This item contains part of the match
+                const [tx, ty] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+                const [tx2] = viewport.convertToViewportPoint(item.transform[4] + item.width, item.transform[5]);
+
+                // Use transform[3] for height, but cap it to a reasonable ratio if needed
+                // item.transform[3] is the vertical scale (font size)
+                const itemH = Math.abs(item.transform[3] * viewport.scale);
+                const totalLen = item.str.length || 1;
+                
+                const relativeStart = overlapStart - itemStart;
+                const relativeEnd = overlapEnd - itemStart;
+                
+                const startFrac = relativeStart / totalLen;
+                const widthFrac = (relativeEnd - relativeStart) / totalLen;
+                const spanW = Math.abs(tx2 - tx);
+
+                const rect = document.createElement("div");
+                rect.className = "absolute bg-yellow-400/40 border border-yellow-500/50 rounded-sm";
+                rect.style.left = `${Math.min(tx, tx2) + spanW * startFrac}px`;
+                // ty is the baseline; we shift slightly to center the highlight on typical glyph heights
+                // PDF.js coordinates can be tricky; 0.8-0.9 * height often looks better than full height shift
+                rect.style.top = `${ty - itemH * 0.9}px`;
+                rect.style.width = `${spanW * widthFrac}px`;
+                rect.style.height = `${itemH * 1.0}px`;
+
+                searchOverlay.appendChild(rect);
+              }
+            }
+            pos = lowerFull.indexOf(lowerQ, pos + 1);
+          }
+
+          if (hasMatch) wrapper.appendChild(searchOverlay);
+        }
+      }
+    };
+
+    drawOverlays();
+    return () => { cancelled = true; };
+  }, [searchQuery, highlights, visiblePages, zoom, displayMode, rotation, pdf]);
 
   /* Scroll to page on external nav in continuous mode */
   useEffect(() => {
@@ -633,63 +875,127 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if (pageEl) {
         pageEl.scrollIntoView({ behavior: "auto", block: "start" });
       }
-      // Reset after a short delay to allow observer to normalize
-      const timer = setTimeout(() => {
-        isNavigating.current = false;
-      }, 150);
-      return () => clearTimeout(timer);
-    } else {
-      // Always ensure transition from non-continuous or non-navigating state resets the flag
-      const timer = setTimeout(() => {
-        isNavigating.current = false;
-      }, 150);
-      return () => clearTimeout(timer);
     }
+    const timer = setTimeout(() => { isNavigating.current = false; }, 150);
+    return () => clearTimeout(timer);
   }, [page, displayMode]);
 
-  /* Scroll-based page tracking for continuous mode */
+  // ─── FIX 3 & 4: Scroll-based page tracking with clean virtualization ──────
+  // Decoupled from rendering state entirely. The observer:
+  //   1. Tracks the most-visible page for the page indicator (no isRenderingRef gate)
+  //   2. Computes a virtual window of currentPage +/- VIRTUAL_BUFFER pages
+  //   3. Mounts canvases for pages inside the window, unmounts for pages outside
+  //   4. Uses index-based buffer (not pixel distance) for predictable behavior
+  const VIRTUAL_BUFFER = 3; // pages above and below viewport to keep mounted
+
   useEffect(() => {
-    if (displayMode !== "continuous" || !containerRef.current) return;
-    
-    // Use IntersectionObserver which is more efficient for this purpose
-    const observer = new IntersectionObserver((entries) => {
-      if (isNavigating.current || isRenderingRef.current) return;
+    if (displayMode !== "continuous" || !viewportRef.current || !containerRef.current) return;
+    const scrollContainer = viewportRef.current;
+    let ticking = false;
 
-      // Find the entry that has the largest intersection ratio or most visible pixels
-      let maxRatio = 0;
-      let targetPageNum = pageRef.current;
+    const updatePageNumber = () => {
+      if (!containerRef.current || !viewportRef.current) return;
+      const pages = containerRef.current.querySelectorAll<HTMLElement>(".pdf-page");
+      if (!pages.length) { ticking = false; return; }
 
-      entries.forEach(entry => {
-        if (entry.isIntersecting && entry.intersectionRatio > maxRatio) {
-          maxRatio = entry.intersectionRatio;
-          const num = Number((entry.target as HTMLElement).dataset.pageNumber);
-          if (num) targetPageNum = num;
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const containerCenterY = containerRect.top + containerRect.height / 2;
+
+      let bestPage = pageRef.current;
+      let maxVisibleHeight = 0;
+      let minDistToCenter = Infinity;
+
+      // FIX 3: Page detection is completely independent of rendering state.
+      // We only skip scroll-driven setPage when isNavigating is true (programmatic jump).
+      for (let i = 0; i < pages.length; i++) {
+        const pageEl = pages[i];
+        const rect = pageEl.getBoundingClientRect();
+        const pageNum = Number(pageEl.dataset.pageNumber);
+
+        const visibleTop = Math.max(containerRect.top, rect.top);
+        const visibleBottom = Math.min(containerRect.bottom, rect.bottom);
+        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+
+        const pageCenterY = rect.top + rect.height / 2;
+        const distToCenter = Math.abs(containerCenterY - pageCenterY);
+
+        if (visibleHeight > maxVisibleHeight) {
+          maxVisibleHeight = visibleHeight;
+          bestPage = pageNum;
+          minDistToCenter = distToCenter;
+        } else if (visibleHeight > 0 && Math.abs(visibleHeight - maxVisibleHeight) < 2) {
+          if (distToCenter < minDistToCenter) {
+            bestPage = pageNum;
+            minDistToCenter = distToCenter;
+          }
+        }
+      }
+
+      // FIX 4: Virtual window — keep +/- VIRTUAL_BUFFER pages around bestPage mounted
+      const windowMin = Math.max(1, bestPage - VIRTUAL_BUFFER);
+      const windowMax = Math.min(totalPages, bestPage + VIRTUAL_BUFFER);
+
+      const newVisiblePages = new Set<number>();
+      for (let p = windowMin; p <= windowMax; p++) newVisiblePages.add(p);
+
+      // Unmount pages outside the virtual window
+      for (let i = 0; i < pages.length; i++) {
+        const pageEl = pages[i];
+        const pageNum = Number(pageEl.dataset.pageNumber);
+        if (!newVisiblePages.has(pageNum) && renderedPagesRef.current.has(pageNum)) {
+          pageEl.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
+          renderedPagesRef.current.delete(pageNum);
+          if (abortControllersRef.current.has(pageNum)) {
+            abortControllersRef.current.get(pageNum)?.abort();
+            abortControllersRef.current.delete(pageNum);
+          }
+        }
+      }
+
+      setVisiblePages(prev => {
+        if (prev.size === newVisiblePages.size && [...newVisiblePages].every(p => prev.has(p))) return prev;
+        return newVisiblePages;
+      });
+
+      // Mount canvases for newly visible pages
+      const outputScale = window.devicePixelRatio || 1;
+      newVisiblePages.forEach(p => {
+        if (!renderedPagesRef.current.has(p)) {
+          const wrapper = containerRef.current!.querySelector<HTMLElement>(`[data-page-number="${p}"]`);
+          if (wrapper) renderPageRef.current(p, wrapper, outputScale);  // ← ref call
         }
       });
 
-      if (targetPageNum !== pageRef.current) {
-        setPage(targetPageNum);
+      // FIX 3: Update page indicator only when scroll is user-driven
+      if (bestPage && bestPage !== pageRef.current && !isNavigating.current) {
+        setPage(bestPage);
       }
-    }, {
-      root: viewportRef.current,
-      threshold: [0.1, 0.5, 0.9],
-      rootMargin: "0px"
-    });
 
-    const pages = containerRef.current.querySelectorAll(".pdf-page");
-    pages.forEach(p => observer.observe(p));
+      ticking = false;
+    };
 
-    return () => observer.disconnect();
-  }, [displayMode, totalPages, placeholdersVersion, zoom, rotation]);
+    const handleScroll = () => {
+      if (!ticking) {
+        requestAnimationFrame(updatePageNumber);
+        ticking = true;
+      }
+    };
+
+    scrollContainer.addEventListener("scroll", handleScroll, { passive: true });
+    // Run once on mount / dependency change to bootstrap the virtual window
+    handleScroll();
+
+    return () => scrollContainer.removeEventListener("scroll", handleScroll);
+  }, [displayMode, totalPages, placeholdersVersion]);
 
   /* Keyboard nav */
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      // Don't intercept when user is typing in an input/textarea
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
       if (isEditable && e.key !== "Escape" && !(e.ctrlKey || e.metaKey)) return;
 
+      // FIX 1: e.preventDefault() on Ctrl+F prevents any form-like default
       if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
       if (e.key === "Escape" && showSearch) { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); return; }
 
@@ -720,7 +1026,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         e.preventDefault();
         setZoom((z) => Math.max(0.4, Math.min(3, z - e.deltaY * 0.002)));
         if (settings.autoFitWidth) {
-          zoomBeforeFit.current = null; // discard saved zoom on manual override
+          zoomBeforeFit.current = null;
           setSettings((prev) => ({ ...prev, autoFitWidth: false }));
         }
       }
@@ -790,7 +1096,17 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
         <div className="w-px h-5 bg-border mx-1" />
 
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setShowSearch((o) => !o)} title="Find (Ctrl+F)">
+        {/* FIX 1: type="button" prevents any ancestor <form> from treating
+            this as a submit trigger. onClick with setShowSearch is pure UI
+            state — it does not affect any PDF rendering effect. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={(e) => { e.preventDefault(); setShowSearch((o) => !o); }}
+          title="Find (Ctrl+F)"
+        >
           <Search className="h-4 w-4" />
         </Button>
         <Button
