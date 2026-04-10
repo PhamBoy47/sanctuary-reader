@@ -1,26 +1,20 @@
 import { motion } from "framer-motion";
-import { FileText, BookOpen, Image, Trash2 } from "lucide-react";
+import { FileText, BookOpen, Trash2 } from "lucide-react";
 import { FileEntry, formatFileSize } from "@/lib/fileStore";
 
 const typeIcons = {
   pdf: FileText,
   epub: BookOpen,
-  cbz: Image,
-  cbr: Image,
 };
 
 const typeColors: Record<string, string> = {
   pdf: "from-red-500/20 to-red-900/10",
   epub: "from-emerald-500/20 to-emerald-900/10",
-  cbz: "from-blue-500/20 to-blue-900/10",
-  cbr: "from-purple-500/20 to-purple-900/10",
 };
 
 const typeBadgeColors: Record<string, string> = {
   pdf: "bg-red-500/20 text-red-300",
   epub: "bg-emerald-500/20 text-emerald-300",
-  cbz: "bg-blue-500/20 text-blue-300",
-  cbr: "bg-purple-500/20 text-purple-300",
 };
 
 interface FileCardProps {

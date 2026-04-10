@@ -1,7 +1,7 @@
 export interface FileEntry {
   id: string;
   name: string;
-  type: 'pdf' | 'epub' | 'cbz' | 'cbr';
+  type: 'pdf' | 'epub';
   size: number;
   lastOpened: number;
   progress: number; // 0-100
@@ -79,8 +79,7 @@ export function detectFileType(name: string): FileEntry['type'] | null {
   const ext = name.toLowerCase().split('.').pop();
   if (ext === 'pdf') return 'pdf';
   if (ext === 'epub') return 'epub';
-  if (ext === 'cbz') return 'cbz';
-  if (ext === 'cbr') return 'cbr';
+
   return null;
 }
 

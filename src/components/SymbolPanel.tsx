@@ -22,12 +22,13 @@ interface SymbolPanelProps {
   placingSymbol: boolean;
   onTogglePlacing: () => void;
   version?: number;
+  onAnnotationChange?: () => void;
 }
 
 export function SymbolPanel({
   fileId, currentPage, onPageSelect,
   activeSymbol, onSymbolChange,
-  placingSymbol, onTogglePlacing, version,
+  placingSymbol, onTogglePlacing, version, onAnnotationChange,
 }: SymbolPanelProps) {
   const [annotations, setAnnotations] = useState<SymbolAnnotation[]>([]);
 
@@ -41,6 +42,7 @@ export function SymbolPanel({
     await removeSymbolAnnotation(id);
     toast.success("Annotation removed");
     reload();
+    onAnnotationChange?.();
   };
 
   return (

@@ -26,11 +26,12 @@ interface HighlightPanelProps {
   activeColor: string;
   onColorChange: (color: string) => void;
   version?: number;
+  onAnnotationChange?: () => void;
 }
 
 export function HighlightPanel({
   fileId, currentPage, onPageSelect,
-  activeColor, onColorChange, version,
+  activeColor, onColorChange, version, onAnnotationChange,
 }: HighlightPanelProps) {
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [showCustom, setShowCustom] = useState(false);
@@ -48,6 +49,7 @@ export function HighlightPanel({
     await removeHighlight(id);
     toast.success("Highlight removed");
     reload();
+    onAnnotationChange?.();
   };
 
   const handleCustomColor = () => {

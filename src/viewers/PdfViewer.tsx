@@ -157,6 +157,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [page, setPage] = useState(1);
+  const pageRef = useRef(1);
   const [totalPages, setTotalPages] = useState(0);
   const [zoom, setZoom] = useState(1.2);
   const [rotation, setRotation] = useState(0);
@@ -165,17 +166,42 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
   const zoomBeforeFit = useRef<number | null>(null);
+  const isRenderingRef = useRef(false);
+
+  // Reading progress persistence
+  useEffect(() => {
+    if (pdf && file.id) {
+      const savedPage = localStorage.getItem(`pdf-progress-${file.id}`);
+      if (savedPage) {
+        const p = parseInt(savedPage, 10);
+        if (p > 0 && p <= pdf.numPages) {
+          setPage(p);
+          // Force scroll to current page on load
+          isNavigating.current = true;
+        }
+      }
+    }
+  }, [pdf, file.id]);
+
+  useEffect(() => {
+    if (file.id && page > 0) {
+      localStorage.setItem(`pdf-progress-${file.id}`, page.toString());
+    }
+  }, [file.id, page]);
+
+  // Keep pageRef in sync with page state
+  useEffect(() => { pageRef.current = page; }, [page]);
 
   // Navigation history
   const [navHistory, setNavHistory] = useState<number[]>([1]);
   const [navIndex, setNavIndex] = useState(0);
   const isNavJump = useRef(false);
-  const isUserScrolling = useRef(false);
+  const isNavigating = useRef(false);
 
-  // Search state
   const [showSearch, setShowSearch] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [currentResultIdx, setCurrentResultIdx] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Annotation state
   const [highlightColor, setHighlightColor] = useState("rgb(255,235,59)");
@@ -183,9 +209,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [placingSymbol, setPlacingSymbol] = useState(false);
 
   // For re-rendering overlay annotations
-  const [highlights, setHighlights] = useState<Highlight[]>([]);
+   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [symbolAnnotations, setSymbolAnnotations] = useState<SymbolAnnotation[]>([]);
   const [annotationVersion, setAnnotationVersion] = useState(0);
+  const [placeholdersVersion, setPlaceholdersVersion] = useState(0);
 
   const reloadAnnotations = useCallback(async () => {
     const [hl, sa] = await Promise.all([
@@ -216,7 +243,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
   /* Navigation history */
   const navigateToPage = useCallback((p: number | ((prev: number) => number)) => {
-    isUserScrolling.current = true;
+    isNavigating.current = true;
     setPage((prevPage) => {
       const newPage = typeof p === "function" ? p(prevPage) : p;
       if (!isNavJump.current && newPage !== prevPage) {
@@ -231,7 +258,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const navBack = useCallback(() => {
     if (navIndex > 0) {
       isNavJump.current = true;
-      isUserScrolling.current = true;
+      isNavigating.current = true;
       const newIdx = navIndex - 1;
       setNavIndex(newIdx);
       setPage(navHistory[newIdx]);
@@ -241,7 +268,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const navForward = useCallback(() => {
     if (navIndex < navHistory.length - 1) {
       isNavJump.current = true;
-      isUserScrolling.current = true;
+      isNavigating.current = true;
       const newIdx = navIndex + 1;
       setNavIndex(newIdx);
       setPage(navHistory[newIdx]);
@@ -302,6 +329,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
   /* Search */
   const handleSearch = useCallback(async (query: string) => {
+    setSearchQuery(query);
     if (!pdf || !query.trim()) { setSearchResults([]); setCurrentResultIdx(0); return; }
     const results = await searchPdf(pdf, query);
     setSearchResults(results);
@@ -456,6 +484,46 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
             viewport,
           });
           await textLayer.render();
+
+          /* Search highlight overlays */
+          if (searchQuery.trim() !== "") {
+            const lowerQuery = searchQuery.toLowerCase();
+            const walker = document.createTreeWalker(textDiv, NodeFilter.SHOW_TEXT);
+            let node = walker.nextNode();
+            const textNodes: Text[] = [];
+            while (node) {
+              textNodes.push(node as Text);
+              node = walker.nextNode();
+            }
+
+            textNodes.forEach((textNode) => {
+              const parent = textNode.parentNode;
+              if (!parent) return;
+              const txt = textNode.nodeValue || "";
+              
+              const lowerTxt = txt.toLowerCase();
+              let startIndex = 0;
+              let foundIndex = lowerTxt.indexOf(lowerQuery, startIndex);
+              if (foundIndex === -1) return;
+
+              const fragment = document.createDocumentFragment();
+              let lastIndex = 0;
+
+              while (foundIndex !== -1) {
+                fragment.appendChild(document.createTextNode(txt.substring(lastIndex, foundIndex)));
+                const mark = document.createElement("mark");
+                mark.className = "pdf-search-highlight";
+                mark.textContent = txt.substring(foundIndex, foundIndex + lowerQuery.length);
+                fragment.appendChild(mark);
+
+                lastIndex = foundIndex + lowerQuery.length;
+                startIndex = lastIndex;
+                foundIndex = lowerTxt.indexOf(lowerQuery, startIndex);
+              }
+              fragment.appendChild(document.createTextNode(txt.substring(lastIndex)));
+              parent.replaceChild(fragment, textNode);
+            });
+          }
         }
       }
 
@@ -491,7 +559,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     const render = async () => {
       const container = containerRef.current;
       if (!container) return;
+      isRenderingRef.current = true;
       container.replaceChildren();
+
+      // Snapshot the page we want to preserve — use ref to avoid stale closure
+      const targetPage = pageRef.current;
 
       /* Pre-create placeholders for continuous mode to fix scroll jumping and observers */
       if (displayMode === "continuous") {
@@ -517,10 +589,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           container.appendChild(wrapper);
           pageDatas.push({ pageNum: i, pdfPage, viewport, wrapper });
         }
+        setPlaceholdersVersion((v) => v + 1);
 
-        // Placeholders are ready. If we re-rendered (e.g. from zoom/theme change), instantly restore the page we were on
-        if (pageDatas[page - 1]) {
-          pageDatas[page - 1].wrapper.scrollIntoView({ behavior: "instant", block: "start" });
+        // Placeholders are ready. Restore scroll to the page we were on before re-render
+        if (pageDatas[targetPage - 1]) {
+          pageDatas[targetPage - 1].wrapper.scrollIntoView({ behavior: "instant", block: "start" });
         }
 
         // Pass 2: Render expensive canvas and layers asynchronously
@@ -528,11 +601,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           if (cancelled) return;
           await renderPage(data.pageNum, data.wrapper, data.pdfPage, data.viewport);
         }
-      } else if (displayMode === "double" || displayMode === "facing") {
+      } else if (displayMode === "twopage") {
         const row = document.createElement("div");
         row.className = "flex gap-4 items-start";
         container.appendChild(row);
-        const startPage = displayMode === "facing" ? (page % 2 === 0 ? page - 1 : page) : page;
+        const startPage = targetPage % 2 === 0 ? targetPage - 1 : targetPage;
         const p1 = await pdf.getPage(Math.max(1, startPage));
         await renderPage(p1.pageNumber, row, p1, p1.getViewport({ scale: zoom, rotation }));
         
@@ -541,71 +614,104 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           await renderPage(p2.pageNumber, row, p2, p2.getViewport({ scale: zoom, rotation }));
         }
       } else {
-        const p1 = await pdf.getPage(page);
-        await renderPage(page, container, p1, p1.getViewport({ scale: zoom, rotation }));
+        const p1 = await pdf.getPage(targetPage);
+        await renderPage(targetPage, container, p1, p1.getViewport({ scale: zoom, rotation }));
       }
+
+      // Allow observer to resume after render settles
+      requestAnimationFrame(() => { isRenderingRef.current = false; });
     };
 
     render().catch((error) => { if (!cancelled) console.error("Failed to render PDF page", error); });
-    return () => { cancelled = true; };
-  }, [renderTrigger, pdf, totalPages, zoom, rotation, settings, displayMode, highlights, symbolAnnotations]);
+    return () => { cancelled = true; isRenderingRef.current = false; };
+  }, [renderTrigger, pdf, totalPages, zoom, rotation, settings, displayMode, highlights, symbolAnnotations, navigateToPage, searchQuery]);
 
   /* Scroll to page on external nav in continuous mode */
   useEffect(() => {
-    if (displayMode === "continuous" && isUserScrolling.current && containerRef.current) {
+    if (displayMode === "continuous" && isNavigating.current && containerRef.current) {
       const pageEl = containerRef.current.querySelector(`.pdf-page[data-page-number="${page}"]`);
       if (pageEl) {
         pageEl.scrollIntoView({ behavior: "auto", block: "start" });
       }
-      isUserScrolling.current = false;
+      // Reset after a short delay to allow observer to normalize
+      const timer = setTimeout(() => {
+        isNavigating.current = false;
+      }, 150);
+      return () => clearTimeout(timer);
+    } else {
+      // Always ensure transition from non-continuous or non-navigating state resets the flag
+      const timer = setTimeout(() => {
+        isNavigating.current = false;
+      }, 150);
+      return () => clearTimeout(timer);
     }
   }, [page, displayMode]);
 
   /* Scroll-based page tracking for continuous mode */
   useEffect(() => {
     if (displayMode !== "continuous" || !containerRef.current) return;
-    const pages = containerRef.current.querySelectorAll(".pdf-page");
-    if (pages.length === 0) return;
+    
+    // Use IntersectionObserver which is more efficient for this purpose
+    const observer = new IntersectionObserver((entries) => {
+      if (isNavigating.current || isRenderingRef.current) return;
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        let topPage: number | null = null;
-        let topY = Infinity;
-        entries.forEach((entry) => {
-          if (entry.isIntersecting && !isUserScrolling.current) {
-            const rect = entry.boundingClientRect;
-            if (rect.top < topY) {
-              topY = rect.top;
-              topPage = Number((entry.target as HTMLElement).dataset.pageNumber);
-            }
-          }
-        });
-        if (topPage && !isUserScrolling.current) {
-           setPage(topPage);
+      // Find the entry that has the largest intersection ratio or most visible pixels
+      let maxRatio = 0;
+      let targetPageNum = pageRef.current;
+
+      entries.forEach(entry => {
+        if (entry.isIntersecting && entry.intersectionRatio > maxRatio) {
+          maxRatio = entry.intersectionRatio;
+          const num = Number((entry.target as HTMLElement).dataset.pageNumber);
+          if (num) targetPageNum = num;
         }
-      },
-      { root: viewportRef.current, threshold: 0.1 },
-    );
+      });
 
-    pages.forEach((p) => observer.observe(p));
+      if (targetPageNum !== pageRef.current) {
+        setPage(targetPageNum);
+      }
+    }, {
+      root: viewportRef.current,
+      threshold: [0.1, 0.5, 0.9],
+      rootMargin: "0px"
+    });
+
+    const pages = containerRef.current.querySelectorAll(".pdf-page");
+    pages.forEach(p => observer.observe(p));
+
     return () => observer.disconnect();
-  }, [displayMode, pdf, totalPages, zoom, rotation, settings, highlights, symbolAnnotations]);
+  }, [displayMode, totalPages, placeholdersVersion, zoom, rotation]);
 
   /* Keyboard nav */
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
+      // Don't intercept when user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
+      if (isEditable && e.key !== "Escape" && !(e.ctrlKey || e.metaKey)) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
+      if (e.key === "Escape" && showSearch) { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); return; }
+
+      const step = displayMode === "twopage" ? 2 : 1;
       if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-        const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
         navigateToPage((p) => Math.min(totalPages, p + step));
       } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-        const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+        navigateToPage((p) => Math.max(1, p - step));
+      } else if (e.key === "Home") {
+        navigateToPage(1);
+      } else if (e.key === "End") {
+        navigateToPage(totalPages);
+      } else if (e.key === "PageDown" || e.key === " ") {
+        if (e.key === " ") e.preventDefault();
+        navigateToPage((p) => Math.min(totalPages, p + step));
+      } else if (e.key === "PageUp") {
         navigateToPage((p) => Math.max(1, p - step));
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [totalPages, displayMode, navigateToPage]);
+  }, [totalPages, displayMode, navigateToPage, showSearch]);
 
   /* Ctrl+scroll zoom */
   useEffect(() => {
@@ -638,11 +744,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         currentPage={page}
         totalPages={totalPages}
         onPrevPage={() => {
-          const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+          const step = displayMode === "twopage" ? 2 : 1;
           navigateToPage((prev) => Math.max(1, prev - step));
         }}
         onNextPage={() => {
-          const step = (displayMode === "double" || displayMode === "facing") ? 2 : 1;
+          const step = displayMode === "twopage" ? 2 : 1;
           navigateToPage((prev) => Math.min(totalPages, prev + step));
         }}
         onPageJump={(p) => navigateToPage(p)}
@@ -736,6 +842,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
               onPageSelect={(p) => navigateToPage(p)}
               activeColor={highlightColor} onColorChange={setHighlightColor}
               version={annotationVersion}
+              onAnnotationChange={() => setAnnotationVersion((v) => v + 1)}
             />
           </aside>
         )}
@@ -748,6 +855,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
               placingSymbol={placingSymbol}
               onTogglePlacing={() => setPlacingSymbol((p) => !p)}
               version={annotationVersion}
+              onAnnotationChange={() => setAnnotationVersion((v) => v + 1)}
             />
           </aside>
         )}
@@ -768,7 +876,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           />
           <PdfSearchBar
             isOpen={showSearch}
-            onClose={() => { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); }}
+            onClose={() => { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); setSearchQuery(""); }}
             onSearch={handleSearch}
             onNextResult={handleNextResult}
             onPrevResult={handlePrevResult}
@@ -782,7 +890,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         currentPage={page} totalPages={totalPages}
         displayMode={displayMode} onDisplayModeChange={setDisplayMode}
         zoom={zoom}
-        onPageJump={(p) => navigateToPage(p)}
       />
     </div>
   );

@@ -59,7 +59,7 @@ export function DropZone({ onFilesDropped, children }: DropZoneProps) {
             >
               <Upload className="h-16 w-16 text-primary" />
               <p className="text-xl font-medium text-foreground">Drop files here</p>
-              <p className="text-sm text-muted-foreground">.pdf, .epub, .cbz, .cbr</p>
+              <p className="text-sm text-muted-foreground">.pdf, .epub</p>
             </motion.div>
           </motion.div>
         )}

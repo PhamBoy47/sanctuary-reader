@@ -102,8 +102,8 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     tocRef.current = [];
     el.replaceChildren();
 
-    const arrayBuf = file.data instanceof ArrayBuffer ? file.data.slice(0) : (file.data as ArrayBuffer);
-    const book = ePub(arrayBuf);
+    const data = (file.data as any) instanceof Uint8Array ? (file.data as any).buffer : file.data;
+    const book = ePub(data);
 
     const rendition = book.renderTo(el, {
       width: "100%",
@@ -144,7 +144,12 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       setActiveTocId(findActiveEpubTocId(tocRef.current, location?.start?.href));
     };
 
-    rendition.on("relocated", handleRelocated);
+    rendition.on("relocated", (location: any) => {
+      handleRelocated(location);
+      if (location?.start?.cfi) {
+        localStorage.setItem(`epub-progress-${file.id}`, location.start.cfi);
+      }
+    });
 
     const loadBook = async () => {
       try {
@@ -159,6 +164,10 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         await rendition.display();
 
         if (!cancelled) {
+          const savedLoc = localStorage.getItem(`epub-progress-${file.id}`);
+          if (savedLoc) {
+            await rendition.display(savedLoc);
+          }
           setReady(true);
         }
       } catch (loadError) {
@@ -200,8 +209,14 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") renditionRef.current?.next();
-      if (e.key === "ArrowLeft") renditionRef.current?.prev();
+      // Don't intercept when user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
+      if (isEditable) return;
+
+      if (e.key === "ArrowRight" || e.key === "PageDown") renditionRef.current?.next();
+      if (e.key === "ArrowLeft" || e.key === "PageUp") renditionRef.current?.prev();
+      if (e.key === " ") { e.preventDefault(); renditionRef.current?.next(); }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);

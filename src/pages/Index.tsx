@@ -7,7 +7,7 @@ import { FileCard } from "@/components/FileCard";
 import { DropZone } from "@/components/DropZone";
 import { PdfViewer } from "@/viewers/PdfViewer";
 import { EpubViewer } from "@/viewers/EpubViewer";
-import { ComicViewer } from "@/viewers/ComicViewer";
+
 import {
   FileEntry, getFiles, saveFile, deleteFile,
   detectFileType, generateId,
@@ -28,6 +28,7 @@ export default function Index() {
   useEffect(() => { loadFiles(); }, [loadFiles]);
 
   const importFiles = useCallback(async (fileList: File[]) => {
+    let firstAddedFile: FileEntry | null = null;
     for (const f of fileList) {
       const type = detectFileType(f.name);
       if (!type) continue;
@@ -42,8 +43,12 @@ export default function Index() {
         data,
       };
       await saveFile(entry);
+      if (!firstAddedFile) firstAddedFile = entry;
     }
-    loadFiles();
+    await loadFiles();
+    if (firstAddedFile) {
+      setActiveFile(firstAddedFile);
+    }
   }, [loadFiles]);
 
   const handleOpen = useCallback((file: FileEntry) => {
@@ -71,9 +76,7 @@ export default function Index() {
         return <PdfViewer file={activeFile} onBack={handleBack} />;
       case "epub":
         return <EpubViewer file={activeFile} onBack={handleBack} />;
-      case "cbz":
-      case "cbr":
-        return <ComicViewer file={activeFile} onBack={handleBack} />;
+
     }
   }
 
@@ -114,14 +117,14 @@ export default function Index() {
               <input
                 ref={inputRef}
                 type="file"
-                accept=".pdf,.epub,.cbz,.cbr"
+                accept=".pdf,.epub"
                 multiple
                 className="hidden"
                 onChange={handleFileInput}
               />
               <Button onClick={() => inputRef.current?.click()} className="gap-2">
                 <Plus className="h-4 w-4" />
-                Import
+                Open Doc
               </Button>
             </div>
           </div>
@@ -141,13 +144,13 @@ export default function Index() {
               <div className="text-center space-y-2">
                 <h2 className="text-2xl font-semibold text-foreground">Your sanctuary awaits</h2>
                 <p className="text-muted-foreground max-w-md">
-                  Drag & drop your files here, or click Import to add PDFs, EPUBs, comics & manga.
+                  Drag & drop your files here, or click Open Doc to add PDFs & EPUBs.
                   Everything stays on your device.
                 </p>
               </div>
               <Button onClick={() => inputRef.current?.click()} size="lg" className="gap-2 mt-2">
                 <Plus className="h-5 w-5" />
-                Import Files
+                Open Doc
               </Button>
             </motion.div>
           ) : (

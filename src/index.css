@@ -49,16 +49,21 @@
     --sanctuary-warm: 25 80% 50%;
     --sanctuary-surface: 220 18% 12%;
     --sanctuary-overlay: 220 20% 7% / 0.8;
+
+    --font-sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
   }
 }
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
   }
 
   body {
-    @apply bg-background text-foreground font-sans;
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans);
     font-feature-settings: "rlig" 1, "calt" 1;
     -webkit-font-smoothing: antialiased;
   }
@@ -113,27 +118,26 @@
 
 
 
-/* Search highlights — #98FF98 mint green */
+/* Search highlights */
 .pdf-search-highlight {
-  background: rgba(152, 255, 152, 0.45) !important;
+  background: rgb(248 134 5) !important;
   color: transparent !important;
   border-radius: 2px;
-  mix-blend-mode: multiply;
 }
 .pdf-search-highlight.active {
-  background: rgba(152, 255, 152, 0.75) !important;
-  outline: 2px solid rgba(152, 255, 152, 1);
+  background: rgb(248 134 5) !important;
+  outline: 2px solid rgb(248 134 5);
   outline-offset: 1px;
 }
 
 /* EPUB search highlights */
 .epub-search-highlight {
-  background: rgba(152, 255, 152, 0.45) !important;
+  background: rgb(248 134 5) !important;
   border-radius: 2px;
 }
 .epub-search-highlight.active {
-  background: rgba(152, 255, 152, 0.75) !important;
-  outline: 2px solid rgba(152, 255, 152, 1);
+  background: rgb(248 134 5) !important;
+  outline: 2px solid rgb(248 134 5);
   outline-offset: 1px;
 }
 
@@ -150,10 +154,10 @@
 }
 
 .textLayer ::selection {
-  background: rgba(59, 130, 246, 0.35);
+  background: rgba(7, 59, 166, 0.2);
 }
 .textLayer ::-moz-selection {
-  background: rgba(59, 130, 246, 0.35);
+  background: rgba(7, 59, 166, 0.2);
 }
 
 
