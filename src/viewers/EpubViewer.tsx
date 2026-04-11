@@ -32,12 +32,18 @@ type ThemeMode = "original" | "light" | "sepia" | "warm" | "cool" | "dark" | "mi
 
 const themes: Record<ThemeMode, { bg: string; fg: string; link: string; label: string }> = {
   original: { bg: "#ffffff", fg: "#000000", link: "#0066cc", label: "Original" },
-  light: { bg: "#faf9f6", fg: "#1a1a1a", link: "#0055bb", label: "Light" },
-  sepia: { bg: "#f4ecd8", fg: "#5b4636", link: "#7a5c3a", label: "Sepia" },
-  warm: { bg: "#fdf6e3", fg: "#3e2723", link: "#6d4c41", label: "Warm" },
-  cool: { bg: "#e8eaf6", fg: "#1a237e", link: "#283593", label: "Cool" },
-  dark: { bg: "#141a24", fg: "#d4cfc4", link: "#90caf9", label: "Dark" },
-  midnight: { bg: "#0a0e14", fg: "#b0bec5", link: "#80cbc4", label: "Midnight" },
+  // A slightly warmer, softer light theme (inspired by classic books)
+  light: { bg: "#fdfdfc", fg: "#333333", link: "#2563eb", label: "Light" },
+  // A high-contrast sepia (inspired by Apple Books)
+  sepia: { bg: "#fbf0d9", fg: "#5f4b32", link: "#d97706", label: "Sepia" },
+  // A soft, natural warm theme
+  warm: { bg: "#fff8f0", fg: "#4a3f35", link: "#ea580c", label: "Warm" },
+  // A crisp, icy cool theme (Nord-inspired light)
+  cool: { bg: "#eceff4", fg: "#2e3440", link: "#5e81ac", label: "Cool" },
+  // A modern, sleek dark theme (inspired by Tailwind / Vercel)
+  dark: { bg: "#0f172a", fg: "#e2e8f0", link: "#38bdf8", label: "Dark" },
+  // True OLED Black (Saves battery on mobile devices, high contrast)
+  midnight: { bg: "#000000", fg: "#d1d5db", link: "#818cf8", label: "Midnight" },
 };
 
 interface SpineItem { id: string; href: string; }
@@ -408,9 +414,9 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     // Ensure final progress is saved on unmount/exit
     return () => {
       if (ready && epubRef.current) {
-         const total = epubRef.current.spine.length ?? 1;
-         const finalPercentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
-         updateProgress(file.id, finalPercentage).catch(console.error);
+        const total = epubRef.current.spine.length ?? 1;
+        const finalPercentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
+        updateProgress(file.id, finalPercentage).catch(console.error);
       }
     };
   }, [spineIndex, ready, file.id]);
@@ -521,8 +527,8 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
                 key={key}
                 onClick={() => setTheme(key)}
                 className={`w-5 h-5 rounded-full border-2 transition-all ${theme === key
-                    ? "border-primary scale-110 shadow-sm"
-                    : "border-transparent hover:scale-105"
+                  ? "border-primary scale-110 shadow-sm"
+                  : "border-transparent hover:scale-105"
                   }`}
                 style={{ backgroundColor: t.bg }}
                 title={t.label}

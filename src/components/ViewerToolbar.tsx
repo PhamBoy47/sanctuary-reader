@@ -81,7 +81,7 @@ export function ViewerToolbar({
       <Button variant="ghost" size="icon" onClick={onBack} className="h-8 w-8">
         <ArrowLeft className="h-4 w-4" />
       </Button>
-      <h2 className="text-xs font-medium text-foreground truncate max-w-[140px] mr-1">{title}</h2>
+      <h2 className="text-sm font-medium text-foreground truncate max-w-[140px] mr-1">{title}</h2>
 
       <div className="w-px h-5 bg-border mx-1" />
 

@@ -1197,15 +1197,9 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         onBack={handleBackWithCheck}
         currentPage={page}
         totalPages={totalPages}
-        onPrevPage={() => {
-          const step = displayMode === "twopage" ? 2 : 1;
-          navigateToPage((prev) => Math.max(1, prev - step));
-        }}
-        onNextPage={() => {
-          const step = displayMode === "twopage" ? 2 : 1;
-          navigateToPage((prev) => Math.min(totalPages, prev + step));
-        }}
-        onPageJump={(p) => navigateToPage(p)}
+        onPrevPage={navBack}
+        onNextPage={navForward}
+        onPageJump={navigateToPage}
         zoom={zoom}
         onZoomIn={() => {
           setZoom((z) => Math.min(3, z + 0.2));
