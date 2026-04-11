@@ -9,6 +9,7 @@ interface PdfStatusBarProps {
   displayMode: DisplayMode;
   onDisplayModeChange: (mode: DisplayMode) => void;
   zoom: number;
+  hasUnsavedChanges?: boolean;
 }
 
 const displayModes: { mode: DisplayMode; icon: typeof FileText; label: string }[] = [
@@ -19,7 +20,7 @@ const displayModes: { mode: DisplayMode; icon: typeof FileText; label: string }[
 
 export function PdfStatusBar({
   currentPage, totalPages, displayMode,
-  onDisplayModeChange, zoom,
+  onDisplayModeChange, zoom, hasUnsavedChanges
 }: PdfStatusBarProps) {
   return (
     <div className="flex items-center gap-3 px-4 py-1.5 glass-surface border-t border-border text-xs select-none shrink-0">
@@ -27,7 +28,14 @@ export function PdfStatusBar({
         Page {currentPage} of {totalPages}
       </span>
 
-      <div className="flex-1" />
+      <div className="flex-1 flex items-center gap-2">
+        {hasUnsavedChanges && (
+          <span className="flex items-center gap-1.5 text-amber-500 animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-current" />
+            Unsaved changes
+          </span>
+        )}
+      </div>
 
       <span className="text-muted-foreground font-mono">{Math.round(zoom * 100)}%</span>
 
@@ -38,7 +46,7 @@ export function PdfStatusBar({
             variant={displayMode === mode ? "secondary" : "ghost"}
             size="icon"
             className="h-6 w-6"
-            title={label}
+            title={`${label} (d)`}
             onClick={() => onDisplayModeChange(mode)}
           >
             <Icon className="h-3 w-3" />

@@ -21,6 +21,8 @@ import {
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
+import { updateProgress } from "@/lib/fileStore";
+import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -166,6 +168,8 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
   const zoomBeforeFit = useRef<number | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(false);
 
   // FIX 3 & 4: Removed isRenderingRef entirely — it was gating the scroll observer
   // and causing the race condition. All rendering is now fire-and-forget; the
@@ -197,10 +201,21 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   }, [pdf, file.id]);
 
   useEffect(() => {
-    if (file.id && page > 0) {
+    if (file.id && page > 0 && totalPages > 0) {
       localStorage.setItem(`pdf-progress-${file.id}`, page.toString());
+      // Calculate and sync percentage (0-100)
+      const percentage = Math.round((page / totalPages) * 100);
+      updateProgress(file.id, percentage).catch(console.error);
     }
-  }, [file.id, page]);
+    
+    // Ensure final progress is saved on unmount/exit
+    return () => {
+      if (file.id && pageRef.current > 0 && totalPages > 0) {
+        const finalPercentage = Math.round((pageRef.current / totalPages) * 100);
+        updateProgress(file.id, finalPercentage).catch(console.error);
+      }
+    };
+  }, [file.id, page, totalPages]);
 
   // Keep pageRef in sync with page state
   useEffect(() => { pageRef.current = page; }, [page]);
@@ -228,6 +243,14 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [symbolAnnotations, setSymbolAnnotations] = useState<SymbolAnnotation[]>([]);
   const [annotationVersion, setAnnotationVersion] = useState(0);
   const [placeholdersVersion, setPlaceholdersVersion] = useState(0);
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+
+  const handleSave = useCallback(async () => {
+    const percentage = Math.round((page / totalPages) * 100);
+    await updateProgress(file.id, percentage);
+    setHasUnsavedChanges(false);
+    toast.success("Reading progress saved");
+  }, [file.id, page, totalPages]);
 
   const reloadAnnotations = useCallback(async () => {
     const [hl, sa] = await Promise.all([
@@ -239,6 +262,25 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   }, [file.id]);
 
   useEffect(() => { reloadAnnotations(); }, [reloadAnnotations, annotationVersion]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const handleBackWithCheck = useCallback(() => {
+    if (hasUnsavedChanges) {
+      setShowUnsavedDialog(true);
+    } else {
+      onBack();
+    }
+  }, [hasUnsavedChanges, onBack]);
 
   /* Load PDF — depends only on file.data so new-file changes are isolated */
   useEffect(() => {
@@ -345,6 +387,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     return () => ro.disconnect();
   }, [settings.autoFitWidth, handleFitWidth]);
 
+  /* Auto-scroll effect */
+  useEffect(() => {
+    if (!autoScroll || displayMode !== "continuous" || !viewportRef.current) return;
+    const interval = setInterval(() => {
+      if (viewportRef.current) viewportRef.current.scrollTop += 1;
+    }, 50);
+    return () => clearInterval(interval);
+  }, [autoScroll, displayMode]);
+
   /* Search */
   const handleSearch = useCallback(async (query: string) => {
     setSearchQuery(query);
@@ -392,6 +443,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     await addHighlight(file.id, page, highlightColor, text, rects);
     toast.success("Text highlighted");
     setAnnotationVersion((v) => v + 1);
+    setHasUnsavedChanges(true);
   }, [file.id, page, highlightColor]);
 
   /* Bookmark from context menu */
@@ -399,6 +451,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     await addBookmark(file.id, page);
     toast.success(`Bookmarked page ${page}`);
     setAnnotationVersion((v) => v + 1);
+    setHasUnsavedChanges(true);
   }, [file.id, page]);
 
   /* Symbol placement click handler */
@@ -414,6 +467,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     await addSymbolAnnotation(file.id, pageNum, activeSymbol, x, y);
     toast.success("Symbol placed");
     setAnnotationVersion((v) => v + 1);
+    setHasUnsavedChanges(true);
   }, [placingSymbol, file.id, activeSymbol]);
 
   /* Render pages (Structural & Canvas) */
@@ -988,36 +1042,130 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     return () => scrollContainer.removeEventListener("scroll", handleScroll);
   }, [displayMode, totalPages, placeholdersVersion]);
 
-  /* Keyboard nav */
+  /* Keyboard nav & Shortcuts */
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
       if (isEditable && e.key !== "Escape" && !(e.ctrlKey || e.metaKey)) return;
 
-      // FIX 1: e.preventDefault() on Ctrl+F prevents any form-like default
-      if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
+      const ctrlOrMeta = e.ctrlKey || e.metaKey;
+
+      if (ctrlOrMeta && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
       if (e.key === "Escape" && showSearch) { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); return; }
 
-      const step = displayMode === "twopage" ? 2 : 1;
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-        navigateToPage((p) => Math.min(totalPages, p + step));
-      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-        navigateToPage((p) => Math.max(1, p - step));
+      // Save
+      if (ctrlOrMeta && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+
+      // Sidebar
+      if (ctrlOrMeta && e.key === "b") {
+        e.preventDefault();
+        setSidebarTab((prev) => (prev ? null : "toc"));
+        return;
+      }
+
+      // Settings
+      if (ctrlOrMeta && e.key === ",") {
+        e.preventDefault();
+        setSidebarTab("bookmarks");
+        return;
+      }
+
+      // Fullscreen
+      if (ctrlOrMeta && e.key === "l") {
+        e.preventDefault();
+        viewportRef.current?.requestFullscreen();
+        return;
+      }
+
+      // Zoom Fit toggle
+      if (ctrlOrMeta && e.key === "\\") {
+        e.preventDefault();
+        handleToggleAutoFitWidth();
+        return;
+      }
+
+      // Zoom In/Out
+      if (ctrlOrMeta && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setZoom((z) => Math.min(3, z + 0.1));
+        return;
+      }
+      if (ctrlOrMeta && (e.key === "-" || e.key === "_")) {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.4, z - 0.1));
+        return;
+      }
+
+      // Print
+      if (ctrlOrMeta && e.key === "p") {
+        e.preventDefault();
+        if (pdf) printPdf(pdf);
+        return;
+      }
+
+      // Rotation
+      if (ctrlOrMeta && (e.key === "r" || e.key === "R")) {
+        e.preventDefault();
+        if (e.shiftKey) setRotation((r) => (r - 90) % 360);
+        else setRotation((r) => (r + 90) % 360);
+        return;
+      }
+
+      // Save
+      if (ctrlOrMeta && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+
+      // Display modes
+      if (e.key === "d") {
+        const modes: DisplayMode[] = ["single", "continuous", "twopage"];
+        const nextIdx = (modes.indexOf(displayMode) + 1) % modes.length;
+        setDisplayMode(modes[nextIdx]);
+        return;
+      }
+
+      // Auto-scroll toggle
+      if (ctrlOrMeta && e.shiftKey && e.key === "H") {
+        e.preventDefault();
+        setAutoScroll((a) => !a);
+        toast(`Auto-scroll ${!autoScroll ? "enabled" : "disabled"}`);
+        return;
+      }
+
+      // Highlighting / Symbols
+      if (e.shiftKey && e.key === "H") {
+        const selection = window.getSelection();
+        if (selection && selection.toString()) handleHighlightText(selection.toString(), []);
+        return;
+      }
+      if (e.shiftKey && e.key === "S") {
+        setPlacingSymbol(!placingSymbol);
+        return;
+      }
+
+      // Navigation
+      if (e.key === "ArrowRight") {
+        if (e.shiftKey) navigateToPage((p) => Math.min(totalPages, p + 5));
+        else navigateToPage((p) => Math.min(totalPages, p + 1));
+      } else if (e.key === "ArrowLeft") {
+        if (e.shiftKey) navigateToPage((p) => Math.max(1, p - 5));
+        else navigateToPage((p) => Math.max(1, p - 1));
       } else if (e.key === "Home") {
         navigateToPage(1);
       } else if (e.key === "End") {
         navigateToPage(totalPages);
-      } else if (e.key === "PageDown" || e.key === " ") {
-        if (e.key === " ") e.preventDefault();
-        navigateToPage((p) => Math.min(totalPages, p + step));
-      } else if (e.key === "PageUp") {
-        navigateToPage((p) => Math.max(1, p - step));
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [totalPages, displayMode, navigateToPage, showSearch]);
+  }, [totalPages, displayMode, navigateToPage, showSearch, autoScroll, handleToggleAutoFitWidth, handleHighlightText, placingSymbol]);
 
   /* Ctrl+scroll zoom */
   useEffect(() => {
@@ -1046,7 +1194,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     <div className="flex h-screen flex-col bg-background">
       <ViewerToolbar
         title={file.name}
-        onBack={onBack}
+        onBack={handleBackWithCheck}
         currentPage={page}
         totalPages={totalPages}
         onPrevPage={() => {
@@ -1176,13 +1324,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           </aside>
         )}
 
-        {/* Canvas */}
-        <div
-          ref={viewportRef}
-          className={`relative flex-1 ${scrollClass} ${placingSymbol ? "cursor-crosshair" : ""} p-4 md:p-8`}
-          onClick={handleViewportClick}
-        >
-          <div ref={containerRef} className={`shrink-0 ${displayMode === "continuous" ? "space-y-4" : ""}`} />
+        <div className="relative flex-1 overflow-hidden">
+          <div
+            ref={viewportRef}
+            className={`absolute inset-0 block ${scrollClass} ${placingSymbol ? "cursor-crosshair" : ""} p-4 md:p-8`}
+            onClick={handleViewportClick}
+          >
+            <div ref={containerRef} className={`shrink-0 ${displayMode === "continuous" ? "space-y-4" : ""}`} />
+          </div>
+
           <PdfContextMenu
             containerRef={viewportRef}
             onSearchText={handleSearchFromContext}
@@ -1206,6 +1356,22 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         currentPage={page} totalPages={totalPages}
         displayMode={displayMode} onDisplayModeChange={setDisplayMode}
         zoom={zoom}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
+
+      <UnsavedChangesDialog
+        isOpen={showUnsavedDialog}
+        onClose={() => setShowUnsavedDialog(false)}
+        onSave={() => {
+          handleSave();
+          setShowUnsavedDialog(false);
+          onBack();
+        }}
+        onDiscard={() => {
+          setHasUnsavedChanges(false);
+          setShowUnsavedDialog(false);
+          onBack();
+        }}
       />
     </div>
   );

@@ -2,8 +2,9 @@ import { useState, useCallback, useEffect } from "react";
 import {
   ArrowLeft, ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   Printer, RotateCcw, Palette, Moon, Sun, Type, ArrowDownUp,
-  Bookmark, Highlighter, Sticker,
+  Bookmark, Highlighter, Sticker, Keyboard
 } from "lucide-react";
+import { KeyboardShortcutsDialog } from "@/components/KeyboardShortcutsDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -87,7 +88,7 @@ export function ViewerToolbar({
       {/* Page Navigation */}
       {currentPage != null && totalPages != null && (
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1} title="Previous Page" data-testid="prev-page">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1} title="Previous Page (ArrowLeft)" data-testid="prev-page">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <div className="flex items-center justify-center min-w-[60px] text-[13px] text-muted-foreground font-mono">
@@ -107,14 +108,14 @@ export function ViewerToolbar({
                 }}
                 onBlur={handleJump}
                 className="h-6 w-10 text-center text-[13px] p-0 bg-transparent border-transparent hover:border-input focus-visible:ring-1 focus-visible:border-input focus-visible:bg-background mr-1"
-                title="Go to page"
+                title="Go to page (Enter)"
               />
             ) : (
               <span className="mr-1">{currentPage}</span>
             )}
             <span>/ {totalPages}</span>
           </div>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages} title="Next Page" data-testid="next-page">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages} title="Next Page (ArrowRight)" data-testid="next-page">
             <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
@@ -125,11 +126,11 @@ export function ViewerToolbar({
       {/* Zoom */}
       {zoom != null && (
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomOut} title="Zoom Out" data-testid="zoom-out">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomOut} title="Zoom Out (Ctrl + -)" data-testid="zoom-out">
             <ZoomOut className="h-4 w-4" />
           </Button>
           <span className="text-xs text-muted-foreground font-mono w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomIn} title="Zoom In" data-testid="zoom-in">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomIn} title="Zoom In (Ctrl + =)" data-testid="zoom-in">
             <ZoomIn className="h-4 w-4" />
           </Button>
           {settings && onSettingsChange && onToggleAutoFitWidth ? (
@@ -138,12 +139,12 @@ export function ViewerToolbar({
               size="icon" 
               className="h-8 w-8" 
               onClick={onToggleAutoFitWidth} 
-              title={settings.autoFitWidth ? "Disable Auto Fit Width" : "Enable Auto Fit Width"}
+              title={settings.autoFitWidth ? "Disable Auto Fit Width (Ctrl + \\)" : "Enable Auto Fit Width (Ctrl + \\)"}
             >
               <Maximize2 className="h-4 w-4" />
             </Button>
           ) : onFitWidth ? (
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onFitWidth} title="Fit width">
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onFitWidth} title="Fit width (Ctrl + \\)">
               <Maximize2 className="h-4 w-4" />
             </Button>
           ) : null}
@@ -253,12 +254,12 @@ export function ViewerToolbar({
             <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">Tools</DropdownMenuLabel>
             {onPrint && (
               <DropdownMenuItem onClick={onPrint}>
-                <Printer className="h-4 w-4 mr-2" /> Print Document
+                <Printer className="h-4 w-4 mr-2" /> Print Document (Ctrl + P)
               </DropdownMenuItem>
             )}
             {onRotatePage && (
               <DropdownMenuItem onClick={onRotatePage}>
-                <RotateCcw className="h-4 w-4 mr-2" /> Rotate Page
+                <RotateCcw className="h-4 w-4 mr-2" /> Rotate Page (Ctrl + R)
               </DropdownMenuItem>
             )}
             {settings && onSettingsChange && (
@@ -286,7 +287,7 @@ export function ViewerToolbar({
           variant={bookmarksOpen ? "secondary" : "ghost"}
           size="icon" className="h-8 w-8"
           onClick={onToggleBookmarks}
-          title="Bookmarks"
+          title="Bookmarks (Ctrl + ,)"
         >
           <Bookmark className="h-4 w-4" />
         </Button>
@@ -296,7 +297,7 @@ export function ViewerToolbar({
           variant={highlightsOpen ? "secondary" : "ghost"}
           size="icon" className="h-8 w-8"
           onClick={onToggleHighlights}
-          title="Highlights"
+          title="Highlights (Shift + H)"
         >
           <Highlighter className="h-4 w-4" />
         </Button>
@@ -306,11 +307,16 @@ export function ViewerToolbar({
           variant={symbolsOpen ? "secondary" : "ghost"}
           size="icon" className="h-8 w-8"
           onClick={onToggleSymbols}
-          title="Symbol Annotations"
+          title="Symbol Annotations (Shift + S)"
         >
           <Sticker className="h-4 w-4" />
         </Button>
       )}
+
+      <div className="w-px h-5 bg-border mx-1" />
+
+      {/* Shortcuts Help */}
+      <KeyboardShortcutsDialog />
 
       <div className="flex-1" />
 

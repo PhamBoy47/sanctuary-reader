@@ -63,8 +63,10 @@ src/App.tsx
 src/components/BookmarkPanel.tsx
 src/components/DocumentTocSidebar.tsx
 src/components/DropZone.tsx
+src/components/EpubStatusBar.tsx
 src/components/FileCard.tsx
 src/components/HighlightPanel.tsx
+src/components/KeyboardShortcutsDialog.tsx
 src/components/NavLink.tsx
 src/components/PdfContextMenu.tsx
 src/components/PdfSearchBar.tsx
@@ -121,6 +123,7 @@ src/components/ui/toggle-group.tsx
 src/components/ui/toggle.tsx
 src/components/ui/tooltip.tsx
 src/components/ui/use-toast.ts
+src/components/UnsavedChangesDialog.tsx
 src/components/ViewerToolbar.tsx
 src/hooks/use-mobile.tsx
 src/hooks/use-toast.ts
@@ -133,7 +136,6 @@ src/pages/Index.tsx
 src/pages/NotFound.tsx
 src/test/example.test.ts
 src/test/setup.ts
-src/viewers/ComicViewer.tsx
 src/viewers/EpubViewer.tsx
 src/viewers/PdfViewer.tsx
 src/vite-env.d.ts
@@ -152,6 +154,187 @@ vitest.config.ts
 <files>
 This section contains the contents of the repository's files.
 
+<file path="src/components/EpubStatusBar.tsx">
+import { BookOpen } from "lucide-react";
+
+interface EpubStatusBarProps {
+  progress?: string;
+  theme: string;
+  fontSize: number;
+  hasUnsavedChanges?: boolean;
+}
+
+export function EpubStatusBar({
+  progress, theme, fontSize, hasUnsavedChanges
+}: EpubStatusBarProps) {
+  return (
+    <div className="flex items-center gap-3 px-4 py-1.5 glass-surface border-t border-border text-xs select-none shrink-0">
+      <div className="flex items-center gap-2 text-muted-foreground mr-2">
+        <BookOpen className="h-3.5 w-3.5" />
+        <span className="font-mono">{progress || "Page 1"}</span>
+      </div>
+
+      <div className="flex-1 flex items-center gap-2">
+        {hasUnsavedChanges && (
+          <span className="flex items-center gap-1.5 text-amber-500 animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-current" />
+            Unsaved changes
+          </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-4 text-muted-foreground font-mono">
+        <span>Theme: {theme}</span>
+        <span>Size: {fontSize}%</span>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/KeyboardShortcutsDialog.tsx">
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Keyboard } from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+interface ShortcutGroup {
+  name: string;
+  keys: { key: string; label: string }[];
+}
+
+const shortcuts: ShortcutGroup[] = [
+  {
+    name: "Navigation",
+    keys: [
+      { key: "ArrowRight / Left", label: "Next / Previous Page" },
+      { key: "Shift + Arrow", label: "Fast Flip (5 Pages)" },
+      { key: "Home / End", label: "First / Last Page" },
+      { key: "Space / PageDown", label: "Scroll Down / Next Page" },
+    ],
+  },
+  {
+    name: "View & Modes",
+    keys: [
+      { key: "d", label: "Cycle Display Mode (Single / Continuous / Two-page)" },
+      { key: "Ctrl + L", label: "Toggle Fullscreen" },
+      { key: "Ctrl + \\", label: "Toggle Fit Width" },
+      { key: "Ctrl + R", label: "Rotate Clockwise" },
+      { key: "Ctrl + Shift + R", label: "Rotate Counter-clockwise" },
+      { key: "Ctrl + Shift + H", label: "Toggle Auto-scroll" },
+    ],
+  },
+  {
+    name: "Tools & Annotations",
+    keys: [
+      { key: "Ctrl + S", label: "Save Progress / Annotations" },
+      { key: "Ctrl + F", label: "Search inside document" },
+      { key: "Shift + H", label: "Highlight selection" },
+      { key: "Shift + S", label: "Toggle Symbol placement mode" },
+      { key: "Ctrl + B", label: "Toggle Sidebar / TOC" },
+      { key: "Ctrl + ,", label: "Open Bookmarks / Settings" },
+      { key: "Ctrl + P", label: "Print Document" },
+    ],
+  },
+];
+
+export function KeyboardShortcutsDialog() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="icon" className="h-8 w-8" title="Keyboard Shortcuts (?)">
+          <Keyboard className="h-4 w-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md glass-surface border-border">
+        <DialogHeader>
+          <DialogTitle className="text-lg font-semibold flex items-center gap-2">
+            <Keyboard className="h-5 w-5 text-sanctuary-blue" />
+            Keyboard Shortcuts
+          </DialogTitle>
+        </DialogHeader>
+        <div className="space-y-6 mt-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+          {shortcuts.map((group) => (
+            <div key={group.name} className="space-y-2">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mr-2">
+                {group.name}
+              </h3>
+              <div className="space-y-1.5">
+                {group.keys.map((s) => (
+                  <div key={s.key} className="flex items-center justify-between text-sm">
+                    <span className="text-foreground/80">{s.label}</span>
+                    <kbd className="inline-flex h-5 items-center gap-1 rounded border border-border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground opacity-100 italic">
+                      {s.key}
+                    </kbd>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+</file>
+
+<file path="src/components/UnsavedChangesDialog.tsx">
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+
+interface UnsavedChangesDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: () => void;
+  onDiscard: () => void;
+}
+
+export function UnsavedChangesDialog({
+  isOpen,
+  onClose,
+  onSave,
+  onDiscard,
+}: UnsavedChangesDialogProps) {
+  return (
+    <AlertDialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent className="max-w-[400px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Unsaved Changes</AlertDialogTitle>
+          <AlertDialogDescription>
+            You have unsaved changes. Would you like to save them before leaving?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+          <Button variant="ghost" onClick={onClose} className="sm:mr-auto">
+            Cancel
+          </Button>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={onDiscard}>
+              Discard Changes
+            </Button>
+            <Button onClick={onSave}>
+              Save Changes
+            </Button>
+          </div>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+</file>
+
 <file path=".ag_memory.md">
 # [THE FOUNDATION]
 - Core tech stack: React, Tailwind CSS, pdfjs-dist (v5.6.205)
@@ -159,19 +342,24 @@ This section contains the contents of the repository's files.
 - Global state: React `useState` and `useRef` within `PdfViewer`. Annotation state in `annotationStore`.
 
 # [THE FORGE]
-- Feature: Refactoring `PdfViewer.tsx` for performance and stability. (COMPLETED)
+- Feature: Advanced PDF/EPUB Viewing Experience Optimization. (COMPLETED)
 - Files: `src/viewers/PdfViewer.tsx`, `src/index.css`
-- Tasks:
-  1. Prevent search toggle/query from re-initializing the entire PDF layout. [DONE] - Decoupled dependencies and used stateful refresh.
-  2. Implement DOM virtualization for continuous mode. [DONE] - Using `visiblePages` state and checking intersection.
-  3. Fix text layer selection alignment via CSS. [DONE] - Added `line-height: 1 !important` and related styles in `index.css`.
-  4. Move search highlights to a separate overlay. [DONE] - Implemented `search-highlight-layer` with coordinate math.
-  5. Prevent layout jumping on zoom by updating existing DOM nodes. [DONE] - Updated `render` to recycle wrappers.
-  6. Decouple scroll observer from rendering state. [DONE] - Decoupled the logic and removed `isRenderingRef` gating.
+- Finalized Architectural Patch:
+  1. **Continuous Virtualization:** Buffer-based page mounting (+/- 3 pages) with clean cleanup.
+  2. **Coordinate Matrix Fix:** Switched to `convertToViewportPoint` for pixel-perfect overlays.
+  3. **Fragmented Search:** Live strings joined across PDF text-items to handle split-word matches.
+  4. **Selection Physics:** Solved "Darker Blocks" error by using opaque selection color + parent `opacity` + `mix-blend-mode: multiply`.
+  5. **Visibility:** Fixed 0x0 size bug in single/two-page viewing modes.
 
 # [THE GRAVEYARD]
-- Direct DOM mutation of text nodes via `TreeWalker` was removed to prevent pdf.js coordinate breakage.
-- `container.replaceChildren()` on every zoom was causing scroll jumps; replaced with in-place updates.
+- `TreeWalker` DOM mutation: Removed (Corrupted selection coordinate tracking).
+- `findLastIndex` (ES2023): Replaced with manual for-loop due to target JS version.
+- `pdfjsLib.Util.applyTransform`: Returns `void` in this version; switched to viewport methods.
+- Transparent `::selection`: Caused additive alpha artifacts; switched to parent-transparency pattern.
+- Buffer-less Scroll Tracking: Caused race conditions during fast scrolling; resolved via `renderPageRef`.
+
+# [THE BLOCKERS]
+- None. PDF viewer is currently at "GodMode" stability.
 </file>
 
 <file path=".gitignore">
@@ -5616,153 +5804,6 @@ Object.defineProperty(window, "matchMedia", {
 });
 </file>
 
-<file path="src/viewers/ComicViewer.tsx">
-import { useEffect, useState, useCallback } from "react";
-import JSZip from "jszip";
-import { ViewerToolbar } from "@/components/ViewerToolbar";
-import { Button } from "@/components/ui/button";
-import { ArrowLeftRight, Columns2, SunMedium, Contrast } from "lucide-react";
-import type { FileEntry } from "@/lib/fileStore";
-
-interface ComicViewerProps {
-  file: FileEntry;
-  onBack: () => void;
-}
-
-type DisplayMode = "single" | "double" | "scroll";
-
-export function ComicViewer({ file, onBack }: ComicViewerProps) {
-  const [images, setImages] = useState<string[]>([]);
-  const [page, setPage] = useState(0);
-  const [rtl, setRtl] = useState(false);
-  const [mode, setMode] = useState<DisplayMode>("single");
-  const [brightness, setBrightness] = useState(100);
-  const [contrast, setContrast] = useState(100);
-  const [showEnhance, setShowEnhance] = useState(false);
-
-  useEffect(() => {
-    const load = async () => {
-      const zip = await JSZip.loadAsync(file.data);
-      const imageFiles = Object.keys(zip.files)
-        .filter((f) => /\.(jpe?g|png|gif|webp|bmp)$/i.test(f))
-        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-
-      const urls: string[] = [];
-      for (const name of imageFiles) {
-        const blob = await zip.files[name].async("blob");
-        urls.push(URL.createObjectURL(blob));
-      }
-      setImages(urls);
-    };
-    load();
-
-    return () => {
-      images.forEach(URL.revokeObjectURL);
-    };
-  }, [file.data]);
-
-  const totalPages = images.length;
-
-  const goNext = useCallback(() => {
-    const step = mode === "double" ? 2 : 1;
-    setPage((p) => Math.min(totalPages - 1, p + step));
-  }, [totalPages, mode]);
-
-  const goPrev = useCallback(() => {
-    const step = mode === "double" ? 2 : 1;
-    setPage((p) => Math.max(0, p - step));
-  }, [mode]);
-
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      const next = rtl ? "ArrowLeft" : "ArrowRight";
-      const prev = rtl ? "ArrowRight" : "ArrowLeft";
-      if (e.key === next) goNext();
-      if (e.key === prev) goPrev();
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [goNext, goPrev, rtl]);
-
-  const imgStyle = {
-    filter: `brightness(${brightness}%) contrast(${contrast}%)`,
-  };
-
-  return (
-    <div className="flex flex-col h-screen bg-background">
-      <ViewerToolbar
-        title={file.name}
-        onBack={onBack}
-        currentPage={page + 1}
-        totalPages={totalPages}
-        onPrevPage={goPrev}
-        onNextPage={goNext}
-      >
-        <Button variant="ghost" size="icon" onClick={() => setRtl(!rtl)} title={rtl ? "RTL" : "LTR"}>
-          <ArrowLeftRight className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost" size="icon"
-          onClick={() => setMode(mode === "single" ? "double" : mode === "double" ? "scroll" : "single")}
-          title={mode}
-        >
-          <Columns2 className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={() => setShowEnhance(!showEnhance)}>
-          <SunMedium className="h-4 w-4" />
-        </Button>
-      </ViewerToolbar>
-
-      {showEnhance && (
-        <div className="flex items-center gap-6 px-6 py-2 glass-surface">
-          <div className="flex items-center gap-2">
-            <SunMedium className="h-3.5 w-3.5 text-muted-foreground" />
-            <input type="range" min={50} max={150} value={brightness} onChange={(e) => setBrightness(+e.target.value)} className="w-24 accent-primary" />
-          </div>
-          <div className="flex items-center gap-2">
-            <Contrast className="h-3.5 w-3.5 text-muted-foreground" />
-            <input type="range" min={50} max={200} value={contrast} onChange={(e) => setContrast(+e.target.value)} className="w-24 accent-primary" />
-          </div>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-auto flex items-start justify-center p-4">
-        {mode === "scroll" ? (
-          <div className="flex flex-col items-center gap-2 max-w-4xl">
-            {images.map((src, i) => (
-              <img key={i} src={src} alt={`Page ${i + 1}`} className="w-full" style={imgStyle} />
-            ))}
-          </div>
-        ) : (
-          <div className={`flex gap-1 items-center justify-center h-full ${rtl ? "flex-row-reverse" : ""}`}>
-            {images[page] && (
-              <img src={images[page]} alt={`Page ${page + 1}`} className="max-h-[calc(100vh-100px)] object-contain" style={imgStyle} />
-            )}
-            {mode === "double" && images[page + 1] && (
-              <img src={images[page + 1]} alt={`Page ${page + 2}`} className="max-h-[calc(100vh-100px)] object-contain" style={imgStyle} />
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Click zones for paging */}
-      {mode !== "scroll" && (
-        <>
-          <div
-            className="fixed left-0 top-12 w-1/3 bottom-0 cursor-pointer z-10"
-            onClick={rtl ? goNext : goPrev}
-          />
-          <div
-            className="fixed right-0 top-12 w-1/3 bottom-0 cursor-pointer z-10"
-            onClick={rtl ? goPrev : goNext}
-          />
-        </>
-      )}
-    </div>
-  );
-}
-</file>
-
 <file path="src/vite-env.d.ts">
 /// <reference types="vite/client" />
 </file>
@@ -7999,6 +8040,7 @@ interface PdfStatusBarProps {
   displayMode: DisplayMode;
   onDisplayModeChange: (mode: DisplayMode) => void;
   zoom: number;
+  hasUnsavedChanges?: boolean;
 }
 
 const displayModes: { mode: DisplayMode; icon: typeof FileText; label: string }[] = [
@@ -8009,7 +8051,7 @@ const displayModes: { mode: DisplayMode; icon: typeof FileText; label: string }[
 
 export function PdfStatusBar({
   currentPage, totalPages, displayMode,
-  onDisplayModeChange, zoom,
+  onDisplayModeChange, zoom, hasUnsavedChanges
 }: PdfStatusBarProps) {
   return (
     <div className="flex items-center gap-3 px-4 py-1.5 glass-surface border-t border-border text-xs select-none shrink-0">
@@ -8017,7 +8059,14 @@ export function PdfStatusBar({
         Page {currentPage} of {totalPages}
       </span>
 
-      <div className="flex-1" />
+      <div className="flex-1 flex items-center gap-2">
+        {hasUnsavedChanges && (
+          <span className="flex items-center gap-1.5 text-amber-500 animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-current" />
+            Unsaved changes
+          </span>
+        )}
+      </div>
 
       <span className="text-muted-foreground font-mono">{Math.round(zoom * 100)}%</span>
 
@@ -8028,7 +8077,7 @@ export function PdfStatusBar({
             variant={displayMode === mode ? "secondary" : "ghost"}
             size="icon"
             className="h-6 w-6"
-            title={label}
+            title={`${label} (d)`}
             onClick={() => onDisplayModeChange(mode)}
           >
             <Icon className="h-3 w-3" />
@@ -8147,8 +8196,9 @@ import { useState, useCallback, useEffect } from "react";
 import {
   ArrowLeft, ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   Printer, RotateCcw, Palette, Moon, Sun, Type, ArrowDownUp,
-  Bookmark, Highlighter, Sticker,
+  Bookmark, Highlighter, Sticker, Keyboard
 } from "lucide-react";
+import { KeyboardShortcutsDialog } from "@/components/KeyboardShortcutsDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -8232,7 +8282,7 @@ export function ViewerToolbar({
       {/* Page Navigation */}
       {currentPage != null && totalPages != null && (
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1} title="Previous Page" data-testid="prev-page">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1} title="Previous Page (ArrowLeft)" data-testid="prev-page">
             <ChevronLeft className="h-4 w-4" />
           </Button>
           <div className="flex items-center justify-center min-w-[60px] text-[13px] text-muted-foreground font-mono">
@@ -8252,14 +8302,14 @@ export function ViewerToolbar({
                 }}
                 onBlur={handleJump}
                 className="h-6 w-10 text-center text-[13px] p-0 bg-transparent border-transparent hover:border-input focus-visible:ring-1 focus-visible:border-input focus-visible:bg-background mr-1"
-                title="Go to page"
+                title="Go to page (Enter)"
               />
             ) : (
               <span className="mr-1">{currentPage}</span>
             )}
             <span>/ {totalPages}</span>
           </div>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages} title="Next Page" data-testid="next-page">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages} title="Next Page (ArrowRight)" data-testid="next-page">
             <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
@@ -8270,11 +8320,11 @@ export function ViewerToolbar({
       {/* Zoom */}
       {zoom != null && (
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomOut} title="Zoom Out" data-testid="zoom-out">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomOut} title="Zoom Out (Ctrl + -)" data-testid="zoom-out">
             <ZoomOut className="h-4 w-4" />
           </Button>
           <span className="text-xs text-muted-foreground font-mono w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomIn} title="Zoom In" data-testid="zoom-in">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onZoomIn} title="Zoom In (Ctrl + =)" data-testid="zoom-in">
             <ZoomIn className="h-4 w-4" />
           </Button>
           {settings && onSettingsChange && onToggleAutoFitWidth ? (
@@ -8283,12 +8333,12 @@ export function ViewerToolbar({
               size="icon" 
               className="h-8 w-8" 
               onClick={onToggleAutoFitWidth} 
-              title={settings.autoFitWidth ? "Disable Auto Fit Width" : "Enable Auto Fit Width"}
+              title={settings.autoFitWidth ? "Disable Auto Fit Width (Ctrl + \\)" : "Enable Auto Fit Width (Ctrl + \\)"}
             >
               <Maximize2 className="h-4 w-4" />
             </Button>
           ) : onFitWidth ? (
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onFitWidth} title="Fit width">
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onFitWidth} title="Fit width (Ctrl + \\)">
               <Maximize2 className="h-4 w-4" />
             </Button>
           ) : null}
@@ -8398,12 +8448,12 @@ export function ViewerToolbar({
             <DropdownMenuLabel className="text-xs uppercase tracking-wider text-muted-foreground">Tools</DropdownMenuLabel>
             {onPrint && (
               <DropdownMenuItem onClick={onPrint}>
-                <Printer className="h-4 w-4 mr-2" /> Print Document
+                <Printer className="h-4 w-4 mr-2" /> Print Document (Ctrl + P)
               </DropdownMenuItem>
             )}
             {onRotatePage && (
               <DropdownMenuItem onClick={onRotatePage}>
-                <RotateCcw className="h-4 w-4 mr-2" /> Rotate Page
+                <RotateCcw className="h-4 w-4 mr-2" /> Rotate Page (Ctrl + R)
               </DropdownMenuItem>
             )}
             {settings && onSettingsChange && (
@@ -8431,7 +8481,7 @@ export function ViewerToolbar({
           variant={bookmarksOpen ? "secondary" : "ghost"}
           size="icon" className="h-8 w-8"
           onClick={onToggleBookmarks}
-          title="Bookmarks"
+          title="Bookmarks (Ctrl + ,)"
         >
           <Bookmark className="h-4 w-4" />
         </Button>
@@ -8441,7 +8491,7 @@ export function ViewerToolbar({
           variant={highlightsOpen ? "secondary" : "ghost"}
           size="icon" className="h-8 w-8"
           onClick={onToggleHighlights}
-          title="Highlights"
+          title="Highlights (Shift + H)"
         >
           <Highlighter className="h-4 w-4" />
         </Button>
@@ -8451,11 +8501,16 @@ export function ViewerToolbar({
           variant={symbolsOpen ? "secondary" : "ghost"}
           size="icon" className="h-8 w-8"
           onClick={onToggleSymbols}
-          title="Symbol Annotations"
+          title="Symbol Annotations (Shift + S)"
         >
           <Sticker className="h-4 w-4" />
         </Button>
       )}
+
+      <div className="w-px h-5 bg-border mx-1" />
+
+      {/* Shortcuts Help */}
+      <KeyboardShortcutsDialog />
 
       <div className="flex-1" />
 
@@ -8466,13 +8521,22 @@ export function ViewerToolbar({
 </file>
 
 <file path="src/viewers/EpubViewer.tsx">
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ePub from "epubjs";
+import JSZip from "jszip";
+
+if (typeof window !== "undefined") {
+  (window as any).JSZip = JSZip;
+}
+
 import { ListTree, Minus, Plus, ChevronLeft, ChevronRight } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
+import { EpubStatusBar } from "@/components/EpubStatusBar";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
+import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
 
 interface EpubViewerProps {
   file: FileEntry;
@@ -8499,7 +8563,6 @@ interface EpubTocItem extends TocItem {
 function mapEpubTocItems(items: any[] = [], prefix = "toc"): EpubTocItem[] {
   return items.map((item, index) => {
     const id = `${prefix}-${index}`;
-
     return {
       id,
       label: item.label?.trim() || "Untitled section",
@@ -8519,25 +8582,16 @@ function normalizeHref(href?: string | null) {
 
 function findActiveEpubTocId(items: EpubTocItem[], href?: string | null) {
   const target = normalizeHref(href);
-  if (!target) {
-    return null;
-  }
-
+  if (!target) return null;
   let activeMatch: EpubTocItem | null = null;
-
   for (const item of flattenEpubTocItems(items)) {
     const candidate = normalizeHref(item.href);
-    if (!candidate) {
-      continue;
-    }
-
+    if (!candidate) continue;
     const isMatch = target === candidate || target.endsWith(candidate) || candidate.endsWith(target);
-
     if (isMatch && (!activeMatch || candidate.length > normalizeHref(activeMatch.href).length)) {
       activeMatch = item;
     }
   }
-
   return activeMatch?.id ?? null;
 }
 
@@ -8547,7 +8601,6 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const tocRef = useRef<EpubTocItem[]>([]);
   const [fontSize, setFontSize] = useState(100);
   const [theme, setTheme] = useState<ThemeMode>("dark");
-  const [showSettings, setShowSettings] = useState(false);
   const [showToc, setShowToc] = useState(false);
   const [atStart, setAtStart] = useState(true);
   const [atEnd, setAtEnd] = useState(false);
@@ -8555,94 +8608,110 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const [error, setError] = useState<string | null>(null);
   const [tocItems, setTocItems] = useState<EpubTocItem[]>([]);
   const [activeTocId, setActiveTocId] = useState<string | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [currentCfi, setCurrentCfi] = useState<string | null>(null);
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+
+  const handleSave = useCallback(() => {
+    if (currentCfi) {
+      localStorage.setItem(`epub-progress-${file.id}`, currentCfi);
+      setHasUnsavedChanges(false);
+      toast.success("Reading progress saved");
+    }
+  }, [currentCfi, file.id]);
 
   useEffect(() => {
-    if (!viewerRef.current) return;
+    if (!viewerRef.current || !file.data) return;
     const el = viewerRef.current;
     let cancelled = false;
 
     setReady(false);
     setError(null);
-    setAtStart(true);
-    setAtEnd(false);
-    setTocItems([]);
-    setActiveTocId(null);
-    tocRef.current = [];
     el.replaceChildren();
 
-    const data = (file.data as any) instanceof Uint8Array ? (file.data as any).buffer : file.data;
-    const book = ePub(data);
+    // ── FIX 1: Use Blob URL for book initialization (more robust than raw ArrayBuffer)
+    const blob = new Blob([file.data], { type: "application/epub+zip" });
+    const bookUrl = URL.createObjectURL(blob);
+    const book = ePub(bookUrl);
 
     const rendition = book.renderTo(el, {
       width: "100%",
       height: "100%",
       spread: "none",
       flow: "paginated",
+      manager: "default",
     });
-
     renditionRef.current = rendition;
 
-    Object.entries(themes).forEach(([name, t]) => {
-      rendition.themes.register(name, {
-        body: {
-          background: `${t.bg} !important`,
-          color: `${t.fg} !important`,
-          "font-family": "'Space Grotesk', system-ui, sans-serif !important",
-          "line-height": "1.7 !important",
-          padding: "0 20px !important",
-        },
-        p: {
-          color: `${t.fg} !important`,
-        },
-        "h1, h2, h3, h4, h5, h6": {
-          color: `${t.fg} !important`,
-        },
-        a: {
-          color: `${t.fg} !important`,
-        },
-      });
-    });
-
-    rendition.themes.select(theme);
-    rendition.themes.fontSize(`${fontSize}%`);
-
-    const handleRelocated = (location: any) => {
-      setAtStart(location?.atStart ?? false);
-      setAtEnd(location?.atEnd ?? false);
-      setActiveTocId(findActiveEpubTocId(tocRef.current, location?.start?.href));
+    const applyThemeSelection = () => {
+      rendition.themes.select(theme);
+      rendition.themes.fontSize(`${fontSize}%`);
     };
 
-    rendition.on("relocated", (location: any) => {
-      handleRelocated(location);
-      if (location?.start?.cfi) {
-        localStorage.setItem(`epub-progress-${file.id}`, location.start.cfi);
+    const registerThemes = (r: any) => {
+      Object.entries(themes).forEach(([name, t]) => {
+        r.themes.register(name, {
+          body: {
+            background: `${t.bg} !important`,
+            color: `${t.fg} !important`,
+            "font-family": "Inter, system-ui, sans-serif !important",
+            "line-height": "1.6 !important",
+            padding: "0 40px !important",
+          },
+          "p, div, span, h1, h2, h3, h4, h5, h6": {
+            color: `${t.fg} !important`,
+          },
+          a: {
+            color: `${t.fg} !important`,
+          }
+        });
+      });
+      applyThemeSelection();
+    };
+
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      if (width > 0 && height > 0) {
+        renditionRef.current?.resize(width, height);
       }
+    });
+    ro.observe(el);
+
+    registerThemes(rendition);
+
+    rendition.on("relocated", (location: any) => {
+      if (cancelled) return;
+      setAtStart(location?.atStart ?? false);
+      setAtEnd(location?.atEnd ?? false);
+      const cfi = location?.start?.cfi;
+      if (cfi) {
+        setCurrentCfi(cfi);
+        setHasUnsavedChanges(true);
+      }
+      setActiveTocId(findActiveEpubTocId(tocRef.current, location?.start?.href));
+    });
+
+    rendition.on("rendered", () => {
+      applyThemeSelection();
     });
 
     const loadBook = async () => {
       try {
-        const navigation = await book.loaded.navigation.catch(() => null);
+        await book.ready;
+        if (cancelled) return;
 
-        if (!cancelled) {
-          const nextTocItems = mapEpubTocItems(navigation?.toc ?? []);
-          tocRef.current = nextTocItems;
-          setTocItems(nextTocItems);
-        }
+        const navigation = await book.loaded.navigation;
+        const nextTocItems = mapEpubTocItems(navigation?.toc ?? []);
+        tocRef.current = nextTocItems;
+        if (!cancelled) setTocItems(nextTocItems);
 
-        await rendition.display();
-
-        if (!cancelled) {
-          const savedLoc = localStorage.getItem(`epub-progress-${file.id}`);
-          if (savedLoc) {
-            await rendition.display(savedLoc);
-          }
-          setReady(true);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          console.error("Failed to load EPUB", loadError);
-          setError("Could not open this EPUB.");
-        }
+        const savedLoc = localStorage.getItem(`epub-progress-${file.id}`);
+        await rendition.display(savedLoc || undefined);
+        
+        if (!cancelled) setReady(true);
+      } catch (err) {
+        console.error("EPUB Loading Error:", err);
+        if (!cancelled) setError("Could not open this EPUB file.");
       }
     };
 
@@ -8650,19 +8719,16 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
     return () => {
       cancelled = true;
-      tocRef.current = [];
-      renditionRef.current = null;
-      try {
-        rendition.off?.("relocated", handleRelocated);
-      } catch {
-        // noop
-      }
-      rendition.destroy?.();
+      URL.revokeObjectURL(bookUrl);
+      ro.disconnect();
+      rendition.destroy();
       book.destroy();
       el.replaceChildren();
+      renditionRef.current = null;
     };
-  }, [file.data]);
+  }, [file.id, file.data]);
 
+  // Theme/Font updates
   useEffect(() => {
     if (renditionRef.current && ready) {
       renditionRef.current.themes.select(theme);
@@ -8676,101 +8742,98 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   }, [fontSize, ready]);
 
   useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const handleBackWithCheck = useCallback(() => {
+    if (hasUnsavedChanges) {
+      setShowUnsavedDialog(true);
+    } else {
+      onBack();
+    }
+  }, [hasUnsavedChanges, onBack]);
+
+  useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      // Don't intercept when user is typing in an input/textarea
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
       if (isEditable) return;
 
+      const ctrlOrMeta = e.ctrlKey || e.metaKey;
+
       if (e.key === "ArrowRight" || e.key === "PageDown") renditionRef.current?.next();
       if (e.key === "ArrowLeft" || e.key === "PageUp") renditionRef.current?.prev();
       if (e.key === " ") { e.preventDefault(); renditionRef.current?.next(); }
+
+      if (ctrlOrMeta && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+      }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, []);
-
-  const themeOrder: ThemeMode[] = ["original", "light", "sepia", "warm", "cool", "dark", "midnight"];
-  const nextTheme = () => {
-    setTheme(themeOrder[(themeOrder.indexOf(theme) + 1) % themeOrder.length]);
-  };
+  }, [handleSave]);
 
   const handleTocSelect = (item: TocItem) => {
     const tocItem = item as EpubTocItem;
-
-    if (!tocItem.href) {
-      return;
-    }
-
-    renditionRef.current?.display(tocItem.href);
-
-    if (window.innerWidth < 768) {
-      setShowToc(false);
+    if (tocItem.href) {
+      renditionRef.current?.display(tocItem.href);
+      if (window.innerWidth < 768) setShowToc(false);
     }
   };
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <ViewerToolbar title={file.name} onBack={onBack}>
+    <div className="flex h-screen flex-col bg-background" style={{ color: themes[theme].fg }}>
+      <ViewerToolbar title={file.name} onBack={handleBackWithCheck}>
         <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle table of contents"
-          aria-pressed={showToc}
-          onClick={() => setShowToc((open) => !open)}
+          variant="ghost" size="icon"
+          aria-label="Toggle contents"
+          onClick={() => setShowToc((o) => !o)}
+          className={showToc ? "bg-secondary" : ""}
         >
           <ListTree className="h-4 w-4" />
         </Button>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => renditionRef.current?.prev()}
-            disabled={atStart}
-          >
+        
+        <div className="flex items-center gap-1 border-l border-border pl-1 ml-1">
+          <Button variant="ghost" size="icon" onClick={() => renditionRef.current?.prev()} disabled={!ready || atStart}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => renditionRef.current?.next()}
-            disabled={atEnd}
-          >
+          <Button variant="ghost" size="icon" onClick={() => renditionRef.current?.next()} disabled={!ready || atEnd}>
             <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex items-center gap-1">
-          {(Object.entries(themes) as [ThemeMode, typeof themes[ThemeMode]][]).map(([key, t]) => (
-            <Button
-              key={key}
-              variant={theme === key ? "secondary" : "ghost"}
-              size="sm"
-              className="h-7 text-[10px] px-2 gap-1"
-              onClick={() => setTheme(key)}
-              title={t.label}
-            >
-              <span
-                className="w-3 h-3 rounded-full border border-border"
-                style={{ backgroundColor: t.bg }}
-              />
-              <span className="hidden sm:inline">{t.label}</span>
-            </Button>
-          ))}
-        </div>
-      </ViewerToolbar>
 
-      {showSettings && (
-        <div className="flex items-center gap-4 px-6 py-2 glass-surface">
-          <span className="text-xs text-muted-foreground">Font Size</span>
-          <Button variant="ghost" size="icon" onClick={() => setFontSize((s) => Math.max(60, s - 10))}>
+        <div className="flex-1" />
+
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setFontSize(s => Math.max(60, s - 10))} title="Small font">
             <Minus className="h-3 w-3" />
           </Button>
-          <span className="text-xs font-mono text-foreground w-10 text-center">{fontSize}%</span>
-          <Button variant="ghost" size="icon" onClick={() => setFontSize((s) => Math.min(200, s + 10))}>
+          <span className="text-[10px] font-mono w-8 text-center">{fontSize}%</span>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setFontSize(s => Math.min(200, s + 10))} title="Large font">
             <Plus className="h-3 w-3" />
           </Button>
         </div>
-      )}
+
+        <div className="flex items-center gap-1 ml-2">
+          {(Object.entries(themes) as [ThemeMode, typeof themes[ThemeMode]][]).slice(0, 6).map(([key, t]) => (
+            <button
+              key={key}
+              onClick={() => setTheme(key)}
+              className={`w-5 h-5 rounded-full border-2 transition-all ${theme === key ? "border-primary scale-110 shadow-sm" : "border-transparent hover:scale-105"}`}
+              style={{ backgroundColor: t.bg }}
+              title={t.label}
+            />
+          ))}
+        </div>
+      </ViewerToolbar>
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <DocumentTocSidebar
@@ -8784,22 +8847,36 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
         <div
           ref={viewerRef}
-          className="flex-1 overflow-hidden"
+          className="flex-1 overflow-hidden h-full w-full"
           style={{ background: themes[theme].bg }}
         />
 
         {!ready && !error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/90">
+          <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-10">
             <p className="text-muted-foreground animate-pulse">Loading book…</p>
           </div>
         )}
 
         {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/95 px-6 text-center">
-            <p className="text-sm text-muted-foreground">{error}</p>
+          <div className="absolute inset-0 flex items-center justify-center bg-background/95 z-10 px-6 text-center">
+            <p className="text-sm text-destructive">{error}</p>
           </div>
         )}
       </div>
+
+      <EpubStatusBar
+        progress={activeTocId ? tocItems.find(t => t.id === activeTocId)?.label : "Reading..."}
+        theme={themes[theme].label}
+        fontSize={fontSize}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
+
+      <UnsavedChangesDialog
+        isOpen={showUnsavedDialog}
+        onClose={() => setShowUnsavedDialog(false)}
+        onSave={() => { handleSave(); setShowUnsavedDialog(false); onBack(); }}
+        onDiscard={() => { setHasUnsavedChanges(false); setShowUnsavedDialog(false); onBack(); }}
+      />
     </div>
   );
 }
@@ -8879,13 +8956,16 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   ::-webkit-scrollbar {
     width: 6px;
   }
+
   ::-webkit-scrollbar-track {
     background: hsl(var(--background));
   }
+
   ::-webkit-scrollbar-thumb {
     background: hsl(var(--muted-foreground) / 0.3);
     border-radius: 3px;
   }
+
   ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground) / 0.5);
   }
@@ -8894,7 +8974,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 @layer utilities {
   .sanctuary-glow {
     box-shadow: 0 0 30px -5px hsl(var(--sanctuary-glow) / 0.15),
-                0 0 60px -15px hsl(var(--sanctuary-glow) / 0.1);
+      0 0 60px -15px hsl(var(--sanctuary-glow) / 0.1);
   }
 
   .sanctuary-gradient {
@@ -8969,12 +9049,15 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   position: absolute !important;
   inset: 0;
   overflow: hidden;
-  /* Above canvas (1), below overlay layers (4+) */
   z-index: 2 !important;
-  /* Must be 1 so span offsetHeight = font-size only */
   line-height: 1 !important;
-  /* Opacity must be 1; visibility comes from color:transparent on spans */
-  opacity: 1 !important;
+
+  /* ──── THE FIX ──── */
+  opacity: 0.25 !important;
+  /* Control the overall selection strength here */
+  mix-blend-mode: multiply;
+  /* Makes it blend like a real highlighter */
+  /* ───────────────── */
 }
 
 .textLayer span,
@@ -8997,11 +9080,14 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
 /* Selection colour — translucent so annotation highlights show through */
 .textLayer ::selection {
-  background: rgba(7, 59, 166, 0.2);
+  /* Use a SOLID color here. NO transparent (rgba) values. */
+  /* This prevents the "darker blocks" because solid colors don't stack. */
+  background: rgb(59, 130, 246);
   color: transparent;
 }
+
 .textLayer ::-moz-selection {
-  background: rgba(7, 59, 166, 0.2);
+  background: rgb(59, 130, 246);
   color: transparent;
 }
 
@@ -9036,7 +9122,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
 .pdf-search-highlight {
   background: rgb(248 134 5 / 0.45) !important;
-  border-radius: 2px;
+  border-radius: 0px;
 }
 
 .pdf-search-highlight.active {
@@ -9049,7 +9135,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
 .epub-search-highlight {
   background: rgb(248 134 5) !important;
-  border-radius: 2px;
+  border-radius: 0px;
 }
 
 .epub-search-highlight.active {
@@ -9083,6 +9169,7 @@ import {
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
+import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -9228,6 +9315,8 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [settings, setSettings] = useState<PdfSettings>(defaultSettings);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("continuous");
   const zoomBeforeFit = useRef<number | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(false);
 
   // FIX 3 & 4: Removed isRenderingRef entirely — it was gating the scroll observer
   // and causing the race condition. All rendering is now fire-and-forget; the
@@ -9236,6 +9325,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   // FIX 4: Single canonical set of refs (duplicates removed from below)
   const renderedPagesRef = useRef<Set<number>>(new Set());
   const abortControllersRef = useRef<Map<number, AbortController>>(new Map());
+
   // FIX 4: Initialize with first 3 pages so initial render isn't blank
   const [visiblePages, setVisiblePages] = useState<Set<number>>(new Set([1, 2, 3]));
 
@@ -9289,6 +9379,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const [symbolAnnotations, setSymbolAnnotations] = useState<SymbolAnnotation[]>([]);
   const [annotationVersion, setAnnotationVersion] = useState(0);
   const [placeholdersVersion, setPlaceholdersVersion] = useState(0);
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+
+  const handleSave = useCallback(() => {
+    setHasUnsavedChanges(false);
+    toast.success("Document saved");
+  }, []);
 
   const reloadAnnotations = useCallback(async () => {
     const [hl, sa] = await Promise.all([
@@ -9300,6 +9396,25 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   }, [file.id]);
 
   useEffect(() => { reloadAnnotations(); }, [reloadAnnotations, annotationVersion]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  const handleBackWithCheck = useCallback(() => {
+    if (hasUnsavedChanges) {
+      setShowUnsavedDialog(true);
+    } else {
+      onBack();
+    }
+  }, [hasUnsavedChanges, onBack]);
 
   /* Load PDF — depends only on file.data so new-file changes are isolated */
   useEffect(() => {
@@ -9406,6 +9521,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     return () => ro.disconnect();
   }, [settings.autoFitWidth, handleFitWidth]);
 
+  /* Auto-scroll effect */
+  useEffect(() => {
+    if (!autoScroll || displayMode !== "continuous" || !viewportRef.current) return;
+    const interval = setInterval(() => {
+      if (viewportRef.current) viewportRef.current.scrollTop += 1;
+    }, 50);
+    return () => clearInterval(interval);
+  }, [autoScroll, displayMode]);
+
   /* Search */
   const handleSearch = useCallback(async (query: string) => {
     setSearchQuery(query);
@@ -9413,7 +9537,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     const results = await searchPdf(pdf, query);
     setSearchResults(results);
     setCurrentResultIdx(results.length > 0 ? 1 : 0);
-    if (results.length > 0) navigateToPage(results[0].page);
+    // Only navigate if the first result is on a DIFFERENT page to prevent reset loops
+    if (results.length > 0 && results[0].page !== pageRef.current) {
+      navigateToPage(results[0].page);
+    }
   }, [pdf, navigateToPage]);
 
   const handleNextResult = useCallback(() => {
@@ -9450,6 +9577,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     await addHighlight(file.id, page, highlightColor, text, rects);
     toast.success("Text highlighted");
     setAnnotationVersion((v) => v + 1);
+    setHasUnsavedChanges(true);
   }, [file.id, page, highlightColor]);
 
   /* Bookmark from context menu */
@@ -9457,6 +9585,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     await addBookmark(file.id, page);
     toast.success(`Bookmarked page ${page}`);
     setAnnotationVersion((v) => v + 1);
+    setHasUnsavedChanges(true);
   }, [file.id, page]);
 
   /* Symbol placement click handler */
@@ -9472,6 +9601,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     await addSymbolAnnotation(file.id, pageNum, activeSymbol, x, y);
     toast.success("Symbol placed");
     setAnnotationVersion((v) => v + 1);
+    setHasUnsavedChanges(true);
   }, [placingSymbol, file.id, activeSymbol]);
 
   /* Render pages (Structural & Canvas) */
@@ -9619,6 +9749,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     }
   }, [pdf, zoom, rotation, settings, symbolAnnotations, navigateToPage, totalPages]);
 
+  // Synchronize a stable ref for callbacks that run outside the React cycle (virtualization)
+  const renderPageRef = useRef(renderPage);
+  useEffect(() => { renderPageRef.current = renderPage; }, [renderPage]);
+
   // ─── FIX 6: Save scroll anchor before a layout-affecting rebuild ──────────
   // Finds which page is currently at the top of the viewport and what fraction
   // of that page's height is above the fold, so we can restore the same visual
@@ -9753,23 +9887,35 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           container.appendChild(row);
           const startPage = page % 2 === 0 ? page - 1 : page;
 
+          const p1 = await pdf.getPage(startPage);
+          const vp1 = p1.getViewport({ scale: zoom, rotation });
           const wrapper1 = document.createElement("div");
           wrapper1.className = "pdf-page relative overflow-hidden bg-muted/5";
           wrapper1.dataset.pageNumber = String(startPage);
+          wrapper1.style.width = `${vp1.width}px`;
+          wrapper1.style.height = `${vp1.height}px`;
           row.appendChild(wrapper1);
           renderPage(startPage, wrapper1, outputScale);
 
           if (startPage + 1 <= totalPages) {
+            const p2 = await pdf.getPage(startPage + 1);
+            const vp2 = p2.getViewport({ scale: zoom, rotation });
             const wrapper2 = document.createElement("div");
             wrapper2.className = "pdf-page relative overflow-hidden bg-muted/5";
             wrapper2.dataset.pageNumber = String(startPage + 1);
+            wrapper2.style.width = `${vp2.width}px`;
+            wrapper2.style.height = `${vp2.height}px`;
             row.appendChild(wrapper2);
             renderPage(startPage + 1, wrapper2, outputScale);
           }
         } else {
+          const p = await pdf.getPage(page);
+          const vp = p.getViewport({ scale: zoom, rotation });
           const wrapper = document.createElement("div");
           wrapper.className = "pdf-page relative overflow-hidden bg-muted/5";
           wrapper.dataset.pageNumber = String(page);
+          wrapper.style.width = `${vp.width}px`;
+          wrapper.style.height = `${vp.height}px`;
           container.appendChild(wrapper);
           renderPage(page, wrapper, outputScale);
         }
@@ -9842,52 +9988,64 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           const textContent = await pdfPage.getTextContent();
           if (cancelled) return;
 
-          const lowerQuery = searchQuery.toLowerCase();
+          const fullText = textContent.items.map((it: any) => it.str).join("");
+          const lowerFull = fullText.toLowerCase();
+          const lowerQ = searchQuery.toLowerCase();
 
-          textContent.items.forEach((item: any) => {
-            const str = item.str || "";
-            if (!str) return;
-            const lowerStr = str.toLowerCase();
-            let pos = lowerStr.indexOf(lowerQuery);
-
-            while (pos !== -1) {
-              hasMatch = true;
-
-              // item.transform is a 6-element CSS-transform matrix:
-              // [scaleX, skewY, skewX, scaleY, translateX, translateY]
-              const viewportTransform = viewport.transform;
-
-              // Map the item's origin into canvas/CSS space
-              const [tx, ty] = viewport.convertToViewportPoint(
-                item.transform[4],
-                item.transform[5],
-              );
-              // Map the far-right edge of the item
-              const [tx2] = viewport.convertToViewportPoint(
-                item.transform[4] + item.width,
-                item.transform[5],
-              );
-
-              // Item height in viewport units (absolute value for rotated pages)
-              const itemH = Math.abs(item.transform[3] * viewport.scale);
-
-              const totalLen = str.length;
-              const startFrac = totalLen > 0 ? pos / totalLen : 0;
-              const widthFrac = totalLen > 0 ? searchQuery.length / totalLen : 0;
-              const spanW = Math.abs(tx2 - tx);
-
-              const rect = document.createElement("div");
-              rect.className = "absolute bg-yellow-400/40 border border-yellow-500/50 rounded-sm";
-              rect.style.left = `${Math.min(tx, tx2) + spanW * startFrac}px`;
-              // ty is the baseline; subtract height to get the top of the glyph
-              rect.style.top = `${ty - itemH}px`;
-              rect.style.width = `${spanW * widthFrac}px`;
-              rect.style.height = `${itemH}px`;
-
-              searchOverlay.appendChild(rect);
-              pos = lowerStr.indexOf(lowerQuery, pos + 1);
-            }
+          // Build item offset map once
+          const offsets: number[] = [];
+          let cursor = 0;
+          textContent.items.forEach((it: any) => {
+            offsets.push(cursor);
+            cursor += (it.str || "").length;
           });
+
+          let pos = lowerFull.indexOf(lowerQ);
+          while (pos !== -1) {
+            hasMatch = true;
+            const matchEnd = pos + lowerQ.length;
+
+            // Find all items that intersect with this match [pos, matchEnd]
+            for (let i = 0; i < textContent.items.length; i++) {
+              const item = textContent.items[i] as any;
+              const itemStart = offsets[i];
+              const itemEnd = itemStart + (item.str || "").length;
+
+              // Check for intersection
+              const overlapStart = Math.max(pos, itemStart);
+              const overlapEnd = Math.min(matchEnd, itemEnd);
+
+              if (overlapStart < overlapEnd) {
+                // This item contains part of the match
+                const [tx, ty] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+                const [tx2] = viewport.convertToViewportPoint(item.transform[4] + item.width, item.transform[5]);
+
+                // Use transform[3] for height, but cap it to a reasonable ratio if needed
+                // item.transform[3] is the vertical scale (font size)
+                const itemH = Math.abs(item.transform[3] * viewport.scale);
+                const totalLen = item.str.length || 1;
+                
+                const relativeStart = overlapStart - itemStart;
+                const relativeEnd = overlapEnd - itemStart;
+                
+                const startFrac = relativeStart / totalLen;
+                const widthFrac = (relativeEnd - relativeStart) / totalLen;
+                const spanW = Math.abs(tx2 - tx);
+
+                const rect = document.createElement("div");
+                rect.className = "absolute bg-yellow-400/40 border border-yellow-500/50 rounded-sm";
+                rect.style.left = `${Math.min(tx, tx2) + spanW * startFrac}px`;
+                // ty is the baseline; we shift slightly to center the highlight on typical glyph heights
+                // PDF.js coordinates can be tricky; 0.8-0.9 * height often looks better than full height shift
+                rect.style.top = `${ty - itemH * 0.9}px`;
+                rect.style.width = `${spanW * widthFrac}px`;
+                rect.style.height = `${itemH * 1.0}px`;
+
+                searchOverlay.appendChild(rect);
+              }
+            }
+            pos = lowerFull.indexOf(lowerQ, pos + 1);
+          }
 
           if (hasMatch) wrapper.appendChild(searchOverlay);
         }
@@ -9992,7 +10150,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       newVisiblePages.forEach(p => {
         if (!renderedPagesRef.current.has(p)) {
           const wrapper = containerRef.current!.querySelector<HTMLElement>(`[data-page-number="${p}"]`);
-          if (wrapper) renderPage(p, wrapper, outputScale);
+          if (wrapper) renderPageRef.current(p, wrapper, outputScale);  // ← ref call
         }
       });
 
@@ -10016,38 +10174,125 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     handleScroll();
 
     return () => scrollContainer.removeEventListener("scroll", handleScroll);
-  }, [displayMode, totalPages, placeholdersVersion, renderPage]);
+  }, [displayMode, totalPages, placeholdersVersion]);
 
-  /* Keyboard nav */
+  /* Keyboard nav & Shortcuts */
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
       if (isEditable && e.key !== "Escape" && !(e.ctrlKey || e.metaKey)) return;
 
-      // FIX 1: e.preventDefault() on Ctrl+F prevents any form-like default
-      if ((e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
+      const ctrlOrMeta = e.ctrlKey || e.metaKey;
+
+      if (ctrlOrMeta && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
       if (e.key === "Escape" && showSearch) { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); return; }
 
-      const step = displayMode === "twopage" ? 2 : 1;
-      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-        navigateToPage((p) => Math.min(totalPages, p + step));
-      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-        navigateToPage((p) => Math.max(1, p - step));
+      // Save
+      if (ctrlOrMeta && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+
+      // Sidebar
+      if (ctrlOrMeta && e.key === "b") {
+        e.preventDefault();
+        setSidebarTab((prev) => (prev ? null : "toc"));
+        return;
+      }
+
+      // Settings
+      if (ctrlOrMeta && e.key === ",") {
+        e.preventDefault();
+        setSidebarTab("bookmarks");
+        return;
+      }
+
+      // Fullscreen
+      if (ctrlOrMeta && e.key === "l") {
+        e.preventDefault();
+        viewportRef.current?.requestFullscreen();
+        return;
+      }
+
+      // Zoom Fit toggle
+      if (ctrlOrMeta && e.key === "\\") {
+        e.preventDefault();
+        handleToggleAutoFitWidth();
+        return;
+      }
+
+      // Zoom In/Out
+      if (ctrlOrMeta && (e.key === "=" || e.key === "+")) {
+        e.preventDefault();
+        setZoom((z) => Math.min(3, z + 0.1));
+        return;
+      }
+      if (ctrlOrMeta && (e.key === "-" || e.key === "_")) {
+        e.preventDefault();
+        setZoom((z) => Math.max(0.4, z - 0.1));
+        return;
+      }
+
+      // Print
+      if (ctrlOrMeta && e.key === "p") {
+        e.preventDefault();
+        if (pdf) printPdf(pdf);
+        return;
+      }
+
+      // Rotation
+      if (ctrlOrMeta && (e.key === "r" || e.key === "R")) {
+        e.preventDefault();
+        if (e.shiftKey) setRotation((r) => (r - 90) % 360);
+        else setRotation((r) => (r + 90) % 360);
+        return;
+      }
+
+      // Display modes
+      if (e.key === "d") {
+        const modes: DisplayMode[] = ["single", "continuous", "twopage"];
+        const nextIdx = (modes.indexOf(displayMode) + 1) % modes.length;
+        setDisplayMode(modes[nextIdx]);
+        return;
+      }
+
+      // Auto-scroll toggle
+      if (ctrlOrMeta && e.shiftKey && e.key === "H") {
+        e.preventDefault();
+        setAutoScroll((a) => !a);
+        toast(`Auto-scroll ${!autoScroll ? "enabled" : "disabled"}`);
+        return;
+      }
+
+      // Highlighting / Symbols
+      if (e.shiftKey && e.key === "H") {
+        const selection = window.getSelection();
+        if (selection && selection.toString()) handleHighlightText(selection.toString(), []);
+        return;
+      }
+      if (e.shiftKey && e.key === "S") {
+        setPlacingSymbol(!placingSymbol);
+        return;
+      }
+
+      // Navigation
+      if (e.key === "ArrowRight") {
+        if (e.shiftKey) navigateToPage((p) => Math.min(totalPages, p + 5));
+        else navigateToPage((p) => Math.min(totalPages, p + 1));
+      } else if (e.key === "ArrowLeft") {
+        if (e.shiftKey) navigateToPage((p) => Math.max(1, p - 5));
+        else navigateToPage((p) => Math.max(1, p - 1));
       } else if (e.key === "Home") {
         navigateToPage(1);
       } else if (e.key === "End") {
         navigateToPage(totalPages);
-      } else if (e.key === "PageDown" || e.key === " ") {
-        if (e.key === " ") e.preventDefault();
-        navigateToPage((p) => Math.min(totalPages, p + step));
-      } else if (e.key === "PageUp") {
-        navigateToPage((p) => Math.max(1, p - step));
       }
     };
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [totalPages, displayMode, navigateToPage, showSearch]);
+  }, [totalPages, displayMode, navigateToPage, showSearch, autoScroll, handleToggleAutoFitWidth, handleHighlightText, placingSymbol]);
 
   /* Ctrl+scroll zoom */
   useEffect(() => {
@@ -10076,7 +10321,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     <div className="flex h-screen flex-col bg-background">
       <ViewerToolbar
         title={file.name}
-        onBack={onBack}
+        onBack={handleBackWithCheck}
         currentPage={page}
         totalPages={totalPages}
         onPrevPage={() => {
@@ -10206,13 +10451,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           </aside>
         )}
 
-        {/* Canvas */}
-        <div
-          ref={viewportRef}
-          className={`relative flex-1 ${scrollClass} ${placingSymbol ? "cursor-crosshair" : ""} p-4 md:p-8`}
-          onClick={handleViewportClick}
-        >
-          <div ref={containerRef} className={`shrink-0 ${displayMode === "continuous" ? "space-y-4" : ""}`} />
+        <div className="relative flex-1 overflow-hidden">
+          <div
+            ref={viewportRef}
+            className={`absolute inset-0 block ${scrollClass} ${placingSymbol ? "cursor-crosshair" : ""} p-4 md:p-8`}
+            onClick={handleViewportClick}
+          >
+            <div ref={containerRef} className={`shrink-0 ${displayMode === "continuous" ? "space-y-4" : ""}`} />
+          </div>
+
           <PdfContextMenu
             containerRef={viewportRef}
             onSearchText={handleSearchFromContext}
@@ -10236,6 +10483,22 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         currentPage={page} totalPages={totalPages}
         displayMode={displayMode} onDisplayModeChange={setDisplayMode}
         zoom={zoom}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
+
+      <UnsavedChangesDialog
+        isOpen={showUnsavedDialog}
+        onClose={() => setShowUnsavedDialog(false)}
+        onSave={() => {
+          handleSave();
+          setShowUnsavedDialog(false);
+          onBack();
+        }}
+        onDiscard={() => {
+          setHasUnsavedChanges(false);
+          setShowUnsavedDialog(false);
+          onBack();
+        }}
       />
     </div>
   );

@@ -168,10 +168,8 @@
   line-height: 1 !important;
 
   /* ──── THE FIX ──── */
-  opacity: 0.25 !important;
-  /* Control the overall selection strength here */
-  mix-blend-mode: multiply;
-  /* Makes it blend like a real highlighter */
+  /* Remove mix-blend-mode: multiply as it makes selection black on dark backgrounds */
+  opacity: 1 !important;
   /* ───────────────── */
 }
 
@@ -181,6 +179,7 @@
   line-height: 1 !important;
   transform-origin: 0% 0% !important;
   color: transparent !important;
+  user-select: auto !important;
 
   /* ── Structural properties ── */
   position: absolute !important;
@@ -193,17 +192,26 @@
   padding: 0 !important;
 }
 
-/* Selection colour — translucent so annotation highlights show through */
+.textLayer br {
+  user-select: none !important;
+}
+
+/* Selection color — translucent so annotation highlights show through */
 .textLayer ::selection {
-  /* Use a SOLID color here. NO transparent (rgba) values. */
-  /* This prevents the "darker blocks" because solid colors don't stack. */
-  background: rgb(59, 130, 246);
-  color: transparent;
+  background: rgba(59, 130, 246, 0.4) !important;
+  color: transparent !important;
 }
 
 .textLayer ::-moz-selection {
-  background: rgb(59, 130, 246);
-  color: transparent;
+  background: rgba(59, 130, 246, 0.4) !important;
+  color: transparent !important;
+}
+
+/* Hide ghost markers (line endings, placeholders) in the margin */
+.textLayer br::selection,
+.textLayer span:empty::selection,
+.textLayer .endOfLine::selection {
+  background: transparent !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════

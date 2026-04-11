@@ -10,10 +10,12 @@ export default defineConfig(({ mode }) => ({
       overlay: false,
     },
   },
-  plugins: [react()],  // ✅ Remove componentTagger
+  plugins: [react()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  // epubjs is no longer used. JSZip is a proper ESM-compatible package
+  // and needs no special treatment here.
 }));

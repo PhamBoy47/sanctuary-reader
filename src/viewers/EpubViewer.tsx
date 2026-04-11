@@ -1,337 +1,602 @@
-import { useEffect, useRef, useState } from "react";
-import ePub from "epubjs";
+/**
+ * EpubViewer — zero epubjs dependency.
+ *
+ * Reads the EPUB ZIP directly with JSZip (already proven to work in this
+ * project), parses the OPF/NCX/NAV structure ourselves, rewrites all
+ * relative asset URLs to inline data: URIs, and renders each spine chapter
+ * inside a sandboxed <iframe srcdoc>.
+ *
+ * This is the only approach that is guaranteed to work in a Vite + ESM
+ * environment because it sidesteps every epubjs CJS/global/JSZip quirk.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import JSZip from "jszip";
 import { ListTree, Minus, Plus, ChevronLeft, ChevronRight } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
+import { EpubStatusBar } from "@/components/EpubStatusBar";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
+import { updateProgress } from "@/lib/fileStore";
+import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
 
-interface EpubViewerProps {
-  file: FileEntry;
-  onBack: () => void;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface EpubViewerProps { file: FileEntry; onBack: () => void; }
 
 type ThemeMode = "original" | "light" | "sepia" | "warm" | "cool" | "dark" | "midnight";
 
-const themes: Record<ThemeMode, { bg: string; fg: string; label: string }> = {
-  original: { bg: "#ffffff", fg: "#000000", label: "Original" },
-  light: { bg: "#faf9f6", fg: "#1a1a1a", label: "Light" },
-  sepia: { bg: "#f4ecd8", fg: "#5b4636", label: "Sepia" },
-  warm: { bg: "#fdf6e3", fg: "#3e2723", label: "Warm" },
-  cool: { bg: "#e8eaf6", fg: "#1a237e", label: "Cool" },
-  dark: { bg: "#141a24", fg: "#d4cfc4", label: "Dark" },
-  midnight: { bg: "#0a0e14", fg: "#b0bec5", label: "Midnight" },
+const themes: Record<ThemeMode, { bg: string; fg: string; link: string; label: string }> = {
+  original: { bg: "#ffffff", fg: "#000000", link: "#0066cc", label: "Original" },
+  light: { bg: "#faf9f6", fg: "#1a1a1a", link: "#0055bb", label: "Light" },
+  sepia: { bg: "#f4ecd8", fg: "#5b4636", link: "#7a5c3a", label: "Sepia" },
+  warm: { bg: "#fdf6e3", fg: "#3e2723", link: "#6d4c41", label: "Warm" },
+  cool: { bg: "#e8eaf6", fg: "#1a237e", link: "#283593", label: "Cool" },
+  dark: { bg: "#141a24", fg: "#d4cfc4", link: "#90caf9", label: "Dark" },
+  midnight: { bg: "#0a0e14", fg: "#b0bec5", link: "#80cbc4", label: "Midnight" },
 };
 
+interface SpineItem { id: string; href: string; }
+interface ManifestItem { id: string; href: string; mediaType: string; }
+
 interface EpubTocItem extends TocItem {
-  children?: EpubTocItem[];
   href: string;
+  children?: EpubTocItem[];
 }
 
-function mapEpubTocItems(items: any[] = [], prefix = "toc"): EpubTocItem[] {
-  return items.map((item, index) => {
-    const id = `${prefix}-${index}`;
+interface ParsedEpub {
+  zip: JSZip;
+  spine: SpineItem[];
+  toc: EpubTocItem[];
+}
 
-    return {
-      id,
-      label: item.label?.trim() || "Untitled section",
-      href: item.href || item.cfi || "",
-      children: mapEpubTocItems(item.subitems ?? [], id),
-    };
+// ─────────────────────────────────────────────────────────────────────────────
+// Path helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function getDir(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i >= 0 ? path.slice(0, i + 1) : "";
+}
+
+/** Resolve a relative path against a base directory (no fragment) */
+function resolvePath(baseDir: string, rel: string): string {
+  if (!rel || /^(https?:|data:|#)/.test(rel)) return rel;
+  const clean = rel.split("#")[0];
+  const parts = (baseDir + clean).split("/");
+  const out: string[] = [];
+  for (const p of parts) {
+    if (p === "..") out.pop();
+    else if (p !== ".") out.push(p);
+  }
+  return out.join("/");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EPUB structure parsers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function parseContainerXml(xml: string): string {
+  const m = xml.match(/full-path="([^"]+)"/);
+  if (!m) throw new Error("container.xml: no full-path attribute found");
+  return m[1];
+}
+
+function parseOpf(
+  xml: string,
+  opfDir: string,
+): { manifest: Record<string, ManifestItem>; spine: SpineItem[] } {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+
+  const manifest: Record<string, ManifestItem> = {};
+  doc.querySelectorAll("manifest item").forEach((el) => {
+    const id = el.getAttribute("id") ?? "";
+    const href = el.getAttribute("href") ?? "";
+    const mediaType = el.getAttribute("media-type") ?? "";
+    manifest[id] = { id, href: opfDir + href, mediaType };
   });
+
+  const spine: SpineItem[] = [];
+  doc.querySelectorAll("spine itemref").forEach((el) => {
+    const idref = el.getAttribute("idref") ?? "";
+    if (manifest[idref]) spine.push({ id: idref, href: manifest[idref].href });
+  });
+
+  return { manifest, spine };
 }
 
-function flattenEpubTocItems(items: EpubTocItem[]): EpubTocItem[] {
-  return items.flatMap((item) => [item, ...flattenEpubTocItems(item.children ?? [])]);
+function parseNcx(xml: string, opfDir: string): EpubTocItem[] {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  let n = 0;
+  function walk(nodes: Element[]): EpubTocItem[] {
+    return nodes.map((el) => {
+      const label = el.querySelector("navLabel text")?.textContent?.trim() ?? "Section";
+      const src = el.querySelector("content")?.getAttribute("src") ?? "";
+      const href = src ? opfDir + src.split("#")[0] : "";
+      const children = walk(Array.from(el.querySelectorAll(":scope > navPoint")));
+      return { id: `toc-${n++}`, label, href, children };
+    });
+  }
+  return walk(Array.from(doc.querySelectorAll("navMap > navPoint")));
 }
 
-function normalizeHref(href?: string | null) {
-  return decodeURIComponent((href ?? "").split("#")[0]);
+function parseNav(xml: string, opfDir: string): EpubTocItem[] {
+  const doc = new DOMParser().parseFromString(xml, "text/html");
+  // EPUB3 nav may use epub:type or a namespaced attribute
+  const nav =
+    doc.querySelector('nav[epub\\:type="toc"]') ??
+    doc.querySelector("nav[*|type='toc']") ??
+    doc.querySelector("nav");
+  if (!nav) return [];
+  let n = 0;
+  function walkOl(ol: Element): EpubTocItem[] {
+    return Array.from(ol.querySelectorAll(":scope > li")).map((li) => {
+      const a = li.querySelector(":scope > a");
+      const label = a?.textContent?.trim() ?? "Section";
+      const rawHref = a?.getAttribute("href") ?? "";
+      const href = rawHref ? opfDir + rawHref.split("#")[0] : "";
+      const childOl = li.querySelector(":scope > ol");
+      return { id: `toc-${n++}`, label, href, children: childOl ? walkOl(childOl) : [] };
+    });
+  }
+  const ol = nav.querySelector("ol");
+  return ol ? walkOl(ol) : [];
 }
 
-function findActiveEpubTocId(items: EpubTocItem[], href?: string | null) {
-  const target = normalizeHref(href);
-  if (!target) {
-    return null;
+// ─────────────────────────────────────────────────────────────────────────────
+// Asset inlining
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MIME_EXT: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
+  svg: "image/svg+xml", webp: "image/webp",
+  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf",
+};
+
+async function toDataUri(zip: JSZip, path: string): Promise<string | null> {
+  const entry = zip.file(path);
+  if (!entry) return null;
+  const b64 = await entry.async("base64");
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  const mime = MIME_EXT[ext] ?? "application/octet-stream";
+  return `data:${mime};base64,${b64}`;
+}
+
+/** Replace url(...) tokens in CSS with inline data URIs */
+async function inlineCssUrls(css: string, cssDir: string, zip: JSZip): Promise<string> {
+  const pattern = /url\(\s*(['"]?)([^'")\s]+)\1\s*\)/g;
+  const jobs: Array<{ token: string; resolved: string }> = [];
+  let m: RegExpExecArray | null;
+
+  while ((m = pattern.exec(css)) !== null) {
+    const raw = m[2];
+    if (/^(data:|https?:|#)/.test(raw)) continue;
+    jobs.push({ token: m[0], resolved: resolvePath(cssDir, raw) });
   }
 
-  let activeMatch: EpubTocItem | null = null;
+  for (const { token, resolved } of jobs) {
+    const uri = await toDataUri(zip, resolved);
+    if (uri) css = css.split(token).join(`url("${uri}")`);
+  }
+  return css;
+}
 
-  for (const item of flattenEpubTocItems(items)) {
-    const candidate = normalizeHref(item.href);
-    if (!candidate) {
-      continue;
+async function fetchCss(zip: JSZip, cssPath: string): Promise<string> {
+  const entry = zip.file(cssPath);
+  if (!entry) return "";
+  const raw = await entry.async("string");
+  return inlineCssUrls(raw, getDir(cssPath), zip);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chapter HTML processor
+// ─────────────────────────────────────────────────────────────────────────────
+
+function themeCSS(t: (typeof themes)[ThemeMode], fontSize: number) {
+  return `
+    html { font-size: ${fontSize}% !important; }
+    html, body {
+      background:   ${t.bg}   !important;
+      color:        ${t.fg}   !important;
+      font-family:  Georgia, "Times New Roman", serif !important;
+      line-height:  1.75     !important;
+      padding:      24px 48px !important;
+      margin:       0        !important;
+      max-width:    800px    !important;
+      margin-left:  auto     !important;
+      margin-right: auto     !important;
     }
+    h1,h2,h3,h4,h5,h6,p,div,span,li,td,th,blockquote { color: ${t.fg} !important; }
+    a { color: ${t.link} !important; }
+    img { max-width: 100% !important; height: auto !important; }
+  `;
+}
 
-    const isMatch = target === candidate || target.endsWith(candidate) || candidate.endsWith(target);
+async function processChapter(
+  zip: JSZip,
+  href: string,
+  theme: ThemeMode,
+  fontSize: number,
+): Promise<string> {
+  const entry = zip.file(href);
+  if (!entry) throw new Error(`Spine item not found in ZIP: ${href}`);
 
-    if (isMatch && (!activeMatch || candidate.length > normalizeHref(activeMatch.href).length)) {
-      activeMatch = item;
-    }
+  const raw = await entry.async("string");
+  const dir = getDir(href);
+  const doc = new DOMParser().parseFromString(raw, "text/html");
+
+  // 1. Inline <link rel="stylesheet">
+  for (const link of Array.from(doc.querySelectorAll<HTMLElement>('link[rel="stylesheet"]'))) {
+    const lhref = link.getAttribute("href") ?? "";
+    if (!lhref || /^https?:/.test(lhref)) continue;
+    const css = await fetchCss(zip, resolvePath(dir, lhref));
+    const style = doc.createElement("style");
+    style.textContent = css;
+    link.replaceWith(style);
   }
 
-  return activeMatch?.id ?? null;
+  // 2. Inline url() inside existing <style> blocks
+  for (const style of Array.from(doc.querySelectorAll("style"))) {
+    style.textContent = await inlineCssUrls(style.textContent ?? "", dir, zip);
+  }
+
+  // 3. Rewrite <img src> to data URIs
+  for (const img of Array.from(doc.querySelectorAll<HTMLImageElement>("img[src]"))) {
+    const src = img.getAttribute("src") ?? "";
+    if (/^(data:|https?:)/.test(src)) continue;
+    const uri = await toDataUri(zip, resolvePath(dir, src));
+    if (uri) img.setAttribute("src", uri);
+  }
+
+  // 4. Remove scripts (sandboxed iframe blocks them anyway; avoid errors)
+  doc.querySelectorAll("script").forEach((s) => s.remove());
+
+  // 5. Remove viewport meta so our CSS controls sizing
+  doc.querySelectorAll('meta[name="viewport"]').forEach((m) => m.remove());
+
+  // 6. Inject theme CSS last so it wins over book styles
+  const override = doc.createElement("style");
+  override.textContent = themeCSS(themes[theme], fontSize);
+  doc.head.appendChild(override);
+
+  return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Top-level EPUB loader
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function loadEpub(data: ArrayBuffer): Promise<ParsedEpub> {
+  const zip = await JSZip.loadAsync(data);
+
+  const containerEntry = zip.file("META-INF/container.xml");
+  if (!containerEntry) throw new Error("Not a valid EPUB: META-INF/container.xml is missing");
+
+  const opfPath = parseContainerXml(await containerEntry.async("string"));
+  const opfDir = getDir(opfPath);
+  const opfEntry = zip.file(opfPath);
+  if (!opfEntry) throw new Error(`OPF not found: ${opfPath}`);
+
+  const { manifest, spine } = parseOpf(await opfEntry.async("string"), opfDir);
+  if (spine.length === 0) throw new Error("EPUB spine is empty — nothing to display");
+
+  // TOC: EPUB3 NAV preferred, then EPUB2 NCX
+  let toc: EpubTocItem[] = [];
+  const navItem = Object.values(manifest).find(
+    (m) => m.mediaType === "application/xhtml+xml" && /nav/i.test(m.href),
+  );
+  const ncxItem = Object.values(manifest).find(
+    (m) => m.mediaType === "application/x-dtbncx+xml",
+  );
+  const tocEntry = (navItem ?? ncxItem) ? zip.file((navItem ?? ncxItem)!.href) : null;
+  if (tocEntry) {
+    const xml = await tocEntry.async("string");
+    toc = ncxItem && !navItem
+      ? parseNcx(xml, opfDir)
+      : parseNav(xml, opfDir);
+  }
+
+  return { zip, spine, toc };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Flatten TOC for active-id matching
+// ─────────────────────────────────────────────────────────────────────────────
+function flatToc(items: EpubTocItem[]): EpubTocItem[] {
+  return items.flatMap((i) => [i, ...flatToc(i.children ?? [])]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Component
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function EpubViewer({ file, onBack }: EpubViewerProps) {
-  const viewerRef = useRef<HTMLDivElement>(null);
-  const renditionRef = useRef<any>(null);
-  const tocRef = useRef<EpubTocItem[]>([]);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const epubRef = useRef<ParsedEpub | null>(null);
+  const isInitialLoad = useRef(true);
+
   const [fontSize, setFontSize] = useState(100);
   const [theme, setTheme] = useState<ThemeMode>("dark");
-  const [showSettings, setShowSettings] = useState(false);
   const [showToc, setShowToc] = useState(false);
-  const [atStart, setAtStart] = useState(true);
-  const [atEnd, setAtEnd] = useState(false);
+  const [spineIndex, setSpineIndex] = useState(0);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tocItems, setTocItems] = useState<EpubTocItem[]>([]);
+  const [toc, setToc] = useState<EpubTocItem[]>([]);
   const [activeTocId, setActiveTocId] = useState<string | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [chapterLoading, setChapterLoading] = useState(false);
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
 
+  // ── Parse EPUB once ───────────────────────────────────────────────────────
   useEffect(() => {
-    if (!viewerRef.current) return;
-    const el = viewerRef.current;
+    if (!file.data) return;
     let cancelled = false;
 
     setReady(false);
     setError(null);
-    setAtStart(true);
-    setAtEnd(false);
-    setTocItems([]);
-    setActiveTocId(null);
-    tocRef.current = [];
-    el.replaceChildren();
+    epubRef.current = null;
+    isInitialLoad.current = true;
 
-    const data = (file.data as any) instanceof Uint8Array ? (file.data as any).buffer : file.data;
-    const book = ePub(data);
-
-    const rendition = book.renderTo(el, {
-      width: "100%",
-      height: "100%",
-      spread: "none",
-      flow: "paginated",
-    });
-
-    renditionRef.current = rendition;
-
-    Object.entries(themes).forEach(([name, t]) => {
-      rendition.themes.register(name, {
-        body: {
-          background: `${t.bg} !important`,
-          color: `${t.fg} !important`,
-          "font-family": "'Space Grotesk', system-ui, sans-serif !important",
-          "line-height": "1.7 !important",
-          padding: "0 20px !important",
-        },
-        p: {
-          color: `${t.fg} !important`,
-        },
-        "h1, h2, h3, h4, h5, h6": {
-          color: `${t.fg} !important`,
-        },
-        a: {
-          color: `${t.fg} !important`,
-        },
+    loadEpub(file.data)
+      .then((parsed) => {
+        if (cancelled) return;
+        epubRef.current = parsed;
+        setToc(parsed.toc);
+        const saved = localStorage.getItem(`epub-progress-${file.id}`);
+        const idx = saved ? parseInt(saved, 10) : 0;
+        setSpineIndex(!isNaN(idx) && idx < parsed.spine.length ? idx : 0);
+        setReady(true);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          console.error("EPUB load error:", err);
+          setError(err instanceof Error ? err.message : "Could not open this EPUB file.");
+        }
       });
-    });
 
-    rendition.themes.select(theme);
-    rendition.themes.fontSize(`${fontSize}%`);
+    return () => { cancelled = true; };
+  }, [file.id, file.data]);
 
-    const handleRelocated = (location: any) => {
-      setAtStart(location?.atStart ?? false);
-      setAtEnd(location?.atEnd ?? false);
-      setActiveTocId(findActiveEpubTocId(tocRef.current, location?.start?.href));
-    };
+  // ── Render chapter on index / theme / fontSize change ────────────────────
+  useEffect(() => {
+    const epub = epubRef.current;
+    if (!ready || !epub) return;
 
-    rendition.on("relocated", (location: any) => {
-      handleRelocated(location);
-      if (location?.start?.cfi) {
-        localStorage.setItem(`epub-progress-${file.id}`, location.start.cfi);
+    const item = epub.spine[spineIndex];
+    if (!item) return;
+
+    let cancelled = false;
+    setChapterLoading(true);
+
+    processChapter(epub.zip, item.href, theme, fontSize)
+      .then((html) => {
+        if (cancelled || !iframeRef.current) return;
+        iframeRef.current.srcdoc = html;
+        setChapterLoading(false);
+        // Sync active TOC item
+        const match = flatToc(epub.toc).find((t) => t.href === item.href);
+        setActiveTocId(match?.id ?? null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          console.error("Chapter render error:", err);
+          setChapterLoading(false);
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [ready, spineIndex, theme, fontSize]);
+
+  // ── Mark unsaved on spine/chapter change ────────────────────────────────
+  useEffect(() => {
+    if (ready) {
+      if (isInitialLoad.current) {
+        isInitialLoad.current = false;
+        return;
       }
-    });
 
-    const loadBook = async () => {
-      try {
-        const navigation = await book.loaded.navigation.catch(() => null);
+      // Auto-update progress percentage
+      const total = epubRef.current?.spine.length ?? 1;
+      const percentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
+      updateProgress(file.id, percentage).catch(console.error);
+    }
 
-        if (!cancelled) {
-          const nextTocItems = mapEpubTocItems(navigation?.toc ?? []);
-          tocRef.current = nextTocItems;
-          setTocItems(nextTocItems);
-        }
-
-        await rendition.display();
-
-        if (!cancelled) {
-          const savedLoc = localStorage.getItem(`epub-progress-${file.id}`);
-          if (savedLoc) {
-            await rendition.display(savedLoc);
-          }
-          setReady(true);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          console.error("Failed to load EPUB", loadError);
-          setError("Could not open this EPUB.");
-        }
-      }
-    };
-
-    loadBook();
-
+    // Ensure final progress is saved on unmount/exit
     return () => {
-      cancelled = true;
-      tocRef.current = [];
-      renditionRef.current = null;
-      try {
-        rendition.off?.("relocated", handleRelocated);
-      } catch {
-        // noop
+      if (ready && epubRef.current) {
+         const total = epubRef.current.spine.length ?? 1;
+         const finalPercentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
+         updateProgress(file.id, finalPercentage).catch(console.error);
       }
-      rendition.destroy?.();
-      book.destroy();
-      el.replaceChildren();
     };
-  }, [file.data]);
+  }, [spineIndex, ready, file.id]);
 
-  useEffect(() => {
-    if (renditionRef.current && ready) {
-      renditionRef.current.themes.select(theme);
-    }
-  }, [theme, ready]);
+  // ── Save progress ─────────────────────────────────────────────────────────
+  const handleSave = useCallback(async () => {
+    const total = epubRef.current?.spine.length ?? 1;
+    const percentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
+    await updateProgress(file.id, percentage);
+    localStorage.setItem(`epub-progress-${file.id}`, String(spineIndex));
+    setHasUnsavedChanges(false);
+    toast.success("Reading progress saved");
+  }, [spineIndex, file.id]);
 
-  useEffect(() => {
-    if (renditionRef.current && ready) {
-      renditionRef.current.themes.fontSize(`${fontSize}%`);
-    }
-  }, [fontSize, ready]);
+  // ── Navigation ────────────────────────────────────────────────────────────
+  const total = epubRef.current?.spine.length ?? 1;
+  const atStart = spineIndex === 0;
+  const atEnd = spineIndex >= total - 1;
 
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      // Don't intercept when user is typing in an input/textarea
-      const tag = (e.target as HTMLElement)?.tagName;
-      const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
-      if (isEditable) return;
+  const goNext = useCallback(() => setSpineIndex((i) => Math.min((epubRef.current?.spine.length ?? 1) - 1, i + 1)), []);
+  const goPrev = useCallback(() => setSpineIndex((i) => Math.max(0, i - 1)), []);
 
-      if (e.key === "ArrowRight" || e.key === "PageDown") renditionRef.current?.next();
-      if (e.key === "ArrowLeft" || e.key === "PageUp") renditionRef.current?.prev();
-      if (e.key === " ") { e.preventDefault(); renditionRef.current?.next(); }
-    };
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
+  // ── TOC selection ─────────────────────────────────────────────────────────
+  const handleTocSelect = useCallback((item: TocItem) => {
+    const epub = epubRef.current;
+    const ti = item as EpubTocItem;
+    if (!epub || !ti.href) return;
+    const idx = epub.spine.findIndex((s) => s.href === ti.href);
+    if (idx >= 0) setSpineIndex(idx);
+    if (window.innerWidth < 768) setShowToc(false);
   }, []);
 
-  const themeOrder: ThemeMode[] = ["original", "light", "sepia", "warm", "cool", "dark", "midnight"];
-  const nextTheme = () => {
-    setTheme(themeOrder[(themeOrder.indexOf(theme) + 1) % themeOrder.length]);
-  };
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "ArrowRight" || e.key === "PageDown") goNext();
+      if (e.key === "ArrowLeft" || e.key === "PageUp") goPrev();
+      if (e.key === " ") { e.preventDefault(); goNext(); }
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); handleSave(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [goNext, goPrev, handleSave]);
 
-  const handleTocSelect = (item: TocItem) => {
-    const tocItem = item as EpubTocItem;
+  // ── Before-unload guard ───────────────────────────────────────────────────
+  useEffect(() => {
+    const fn = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) { e.preventDefault(); e.returnValue = ""; }
+    };
+    window.addEventListener("beforeunload", fn);
+    return () => window.removeEventListener("beforeunload", fn);
+  }, [hasUnsavedChanges]);
 
-    if (!tocItem.href) {
-      return;
-    }
+  const handleBackWithCheck = useCallback(() => {
+    if (hasUnsavedChanges) setShowUnsavedDialog(true);
+    else onBack();
+  }, [hasUnsavedChanges, onBack]);
 
-    renditionRef.current?.display(tocItem.href);
-
-    if (window.innerWidth < 768) {
-      setShowToc(false);
-    }
-  };
-
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <ViewerToolbar title={file.name} onBack={onBack}>
+    <div className="flex h-screen flex-col bg-background" style={{ color: themes[theme].fg }}>
+
+      {/* ── Toolbar ── */}
+      <ViewerToolbar title={file.name} onBack={handleBackWithCheck}>
         <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle table of contents"
-          aria-pressed={showToc}
-          onClick={() => setShowToc((open) => !open)}
+          variant="ghost" size="icon"
+          aria-label="Toggle contents"
+          onClick={() => setShowToc((o) => !o)}
+          className={showToc ? "bg-secondary" : ""}
         >
           <ListTree className="h-4 w-4" />
         </Button>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => renditionRef.current?.prev()}
-            disabled={atStart}
-          >
+
+        <div className="flex items-center gap-1 border-l border-border pl-1 ml-1">
+          <Button variant="ghost" size="icon" onClick={goPrev} disabled={!ready || atStart}>
             <ChevronLeft className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => renditionRef.current?.next()}
-            disabled={atEnd}
-          >
+          <Button variant="ghost" size="icon" onClick={goNext} disabled={!ready || atEnd}>
             <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex items-center gap-1">
-          {(Object.entries(themes) as [ThemeMode, typeof themes[ThemeMode]][]).map(([key, t]) => (
-            <Button
-              key={key}
-              variant={theme === key ? "secondary" : "ghost"}
-              size="sm"
-              className="h-7 text-[10px] px-2 gap-1"
-              onClick={() => setTheme(key)}
-              title={t.label}
-            >
-              <span
-                className="w-3 h-3 rounded-full border border-border"
-                style={{ backgroundColor: t.bg }}
-              />
-              <span className="hidden sm:inline">{t.label}</span>
-            </Button>
-          ))}
-        </div>
-      </ViewerToolbar>
 
-      {showSettings && (
-        <div className="flex items-center gap-4 px-6 py-2 glass-surface">
-          <span className="text-xs text-muted-foreground">Font Size</span>
-          <Button variant="ghost" size="icon" onClick={() => setFontSize((s) => Math.max(60, s - 10))}>
+        <div className="flex-1" />
+
+        {/* Font size */}
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon" className="h-8 w-8"
+            onClick={() => setFontSize((s) => Math.max(60, s - 10))}>
             <Minus className="h-3 w-3" />
           </Button>
-          <span className="text-xs font-mono text-foreground w-10 text-center">{fontSize}%</span>
-          <Button variant="ghost" size="icon" onClick={() => setFontSize((s) => Math.min(200, s + 10))}>
+          <span className="text-[10px] font-mono w-8 text-center">{fontSize}%</span>
+          <Button variant="ghost" size="icon" className="h-8 w-8"
+            onClick={() => setFontSize((s) => Math.min(200, s + 10))}>
             <Plus className="h-3 w-3" />
           </Button>
         </div>
-      )}
 
+        {/* Theme swatches */}
+        <div className="flex items-center gap-1 ml-2">
+          {(Object.entries(themes) as [ThemeMode, (typeof themes)[ThemeMode]][])
+            .slice(0, 6)
+            .map(([key, t]) => (
+              <button
+                key={key}
+                onClick={() => setTheme(key)}
+                className={`w-5 h-5 rounded-full border-2 transition-all ${theme === key
+                    ? "border-primary scale-110 shadow-sm"
+                    : "border-transparent hover:scale-105"
+                  }`}
+                style={{ backgroundColor: t.bg }}
+                title={t.label}
+              />
+            ))}
+        </div>
+      </ViewerToolbar>
+
+      {/* ── Main area ── */}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <DocumentTocSidebar
           title="Book contents"
-          items={tocItems}
+          items={toc}
           isOpen={showToc}
           activeId={activeTocId}
           onClose={() => setShowToc(false)}
           onSelect={handleTocSelect}
         />
 
+        {/* Chapter viewport */}
         <div
-          ref={viewerRef}
-          className="flex-1 overflow-hidden"
+          className="relative flex-1 min-h-0 overflow-hidden"
           style={{ background: themes[theme].bg }}
-        />
+        >
+          {/* iframe is always mounted once ready so srcdoc updates are smooth */}
+          <iframe
+            ref={iframeRef}
+            className="w-full h-full border-0"
+            style={{ display: ready ? "block" : "none" }}
+            sandbox="allow-same-origin"
+            title="Book content"
+          />
 
-        {!ready && !error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/90">
-            <p className="text-muted-foreground animate-pulse">Loading book…</p>
-          </div>
-        )}
+          {/* Loading overlay */}
+          {(!ready || chapterLoading) && !error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-10 pointer-events-none">
+              <p className="text-muted-foreground animate-pulse">
+                {ready ? "Loading chapter…" : "Opening book…"}
+              </p>
+            </div>
+          )}
 
-        {error && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/95 px-6 text-center">
-            <p className="text-sm text-muted-foreground">{error}</p>
-          </div>
-        )}
+          {/* Error state */}
+          {error && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 z-10 px-8 text-center gap-3">
+              <p className="text-sm text-destructive font-medium">{error}</p>
+              <p className="text-xs text-muted-foreground">
+                The file must be a standard EPUB (ZIP-based, no DRM).
+              </p>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* ── Status bar ── */}
+      <EpubStatusBar
+        progress={
+          activeTocId
+            ? flatToc(toc).find((t) => t.id === activeTocId)?.label
+            : ready
+              ? `Chapter ${spineIndex + 1} of ${total}`
+              : "Reading…"
+        }
+        theme={themes[theme].label}
+        fontSize={fontSize}
+        hasUnsavedChanges={hasUnsavedChanges}
+      />
+
+      <UnsavedChangesDialog
+        isOpen={showUnsavedDialog}
+        onClose={() => setShowUnsavedDialog(false)}
+        onSave={() => { handleSave(); setShowUnsavedDialog(false); onBack(); }}
+        onDiscard={() => { setHasUnsavedChanges(false); setShowUnsavedDialog(false); onBack(); }}
+      />
     </div>
   );
 }
