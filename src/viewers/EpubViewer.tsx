@@ -494,14 +494,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           <ListTree className="h-4 w-4" />
         </Button>
 
-        <div className="flex items-center gap-1 border-l border-border pl-1 ml-1">
-          <Button variant="ghost" size="icon" onClick={goPrev} disabled={!ready || atStart}>
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <Button variant="ghost" size="icon" onClick={goNext} disabled={!ready || atEnd}>
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        </div>
+
 
         <div className="flex-1" />
 

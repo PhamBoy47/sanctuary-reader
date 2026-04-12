@@ -565,18 +565,9 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           });
           await textLayer.render();
 
-          // FIX 2: After pdf.js renders span elements, enforce critical styles
-          // inline so Tailwind base resets (which set line-height on * or body)
-          // cannot bleed through and misalign the hit-boxes. These must be
-          // applied AFTER render() because pdf.js creates the spans during render.
-          textDiv.querySelectorAll<HTMLElement>("span, br").forEach((span) => {
-            span.style.lineHeight = "1";
-            span.style.transformOrigin = "0% 0%";
-            span.style.color = "transparent";
-            span.style.whiteSpace = "pre";
-            span.style.cursor = "text";
-            span.style.position = "absolute";
-          });
+          // CRITICAL: We rely on !important rules in index.css for span/br styling.
+          // Applying them inline here can conflict with pdf.js internal scaling
+          // and cause sub-pixel drift.
         }
       }
 
@@ -1228,14 +1219,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         highlightsOpen={sidebarTab === "highlights"}
         symbolsOpen={sidebarTab === "symbols"}
       >
-        {/* Nav history */}
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={navBack} disabled={navIndex <= 0} title="Previous view">
-          <ChevronLeft className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={navForward} disabled={navIndex >= navHistory.length - 1} title="Next view">
-          <ChevronRight className="h-4 w-4" />
-        </Button>
-
         <div className="w-px h-5 bg-border mx-1" />
 
         {/* FIX 1: type="button" prevents any ancestor <form> from treating

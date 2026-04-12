@@ -88,9 +88,6 @@ export function ViewerToolbar({
       {/* Page Navigation */}
       {currentPage != null && totalPages != null && (
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onPrevPage} disabled={currentPage <= 1} title="Previous Page (ArrowLeft)" data-testid="prev-page">
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
           <div className="flex items-center justify-center min-w-[60px] text-[13px] text-muted-foreground font-mono">
             {onPageJump ? (
               <Input
@@ -115,9 +112,6 @@ export function ViewerToolbar({
             )}
             <span>/ {totalPages}</span>
           </div>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onNextPage} disabled={currentPage >= totalPages} title="Next Page (ArrowRight)" data-testid="next-page">
-            <ChevronRight className="h-4 w-4" />
-          </Button>
         </div>
       )}
 

@@ -168,8 +168,15 @@
   line-height: 1 !important;
 
   /* ──── THE FIX ──── */
-  /* Remove mix-blend-mode: multiply as it makes selection black on dark backgrounds */
-  opacity: 1 !important;
+  /* 1. Use container opacity + opaque selection to prevent alpha-stacking.
+     2. Use font-size/line-height: 0 to compress gaps between spans and prevent selection drift/jump. */
+  opacity: 0.35 !important;
+  pointer-events: auto !important;
+  user-select: text !important;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  /* Use generic sans-serif to better match PDF metrics if specific fonts fail to load. */
+  font-family: sans-serif !important;
   /* ───────────────── */
 }
 
@@ -179,9 +186,11 @@
   line-height: 1 !important;
   transform-origin: 0% 0% !important;
   color: transparent !important;
-  user-select: auto !important;
+  user-select: text !important;
 
   /* ── Structural properties ── */
+  display: block !important;
+  box-sizing: content-box !important;
   position: absolute !important;
   white-space: pre !important;
   cursor: text !important;
@@ -196,9 +205,9 @@
   user-select: none !important;
 }
 
-/* Selection color — translucent so annotation highlights show through */
+/* Selection color — OPAQUE so overlaps don't darken. Container opacity (above) provides translucency. */
 .textLayer ::selection {
-  background: rgba(59, 130, 246, 0.4) !important;
+  background: rgb(59, 130, 246) !important;
   color: transparent !important;
 }
 
