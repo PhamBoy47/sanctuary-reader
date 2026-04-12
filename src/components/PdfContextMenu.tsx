@@ -1,11 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { Copy, Highlighter, Search, Bookmark } from "lucide-react";
+import { Copy, Highlighter, Search, Bookmark, Book } from "lucide-react";
 import { toast } from "sonner";
 
 interface PdfContextMenuProps {
   containerRef: React.RefObject<HTMLDivElement>;
   onSearchText?: (text: string) => void;
   onHighlightText?: (text: string, rects: { x: number; y: number; w: number; h: number }[]) => void;
+  onDefineText?: (text: string, x: number, y: number) => void;
   onBookmarkPage?: () => void;
   highlightColor?: string;
 }
@@ -18,7 +19,7 @@ interface MenuPosition {
 }
 
 export function PdfContextMenu({
-  containerRef, onSearchText, onHighlightText, onBookmarkPage, highlightColor,
+  containerRef, onSearchText, onHighlightText, onDefineText, onBookmarkPage, highlightColor,
 }: PdfContextMenuProps) {
   const [menu, setMenu] = useState<MenuPosition | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -101,6 +102,12 @@ export function PdfContextMenu({
     setMenu(null);
   }, [onBookmarkPage]);
 
+  const handleDefine = useCallback(() => {
+    if (!menu) return;
+    onDefineText?.(menu.text, menu.x, menu.y);
+    setMenu(null);
+  }, [menu, onDefineText]);
+
   if (!menu) return null;
 
   return (
@@ -118,6 +125,12 @@ export function PdfContextMenu({
         className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary transition-colors"
       >
         <Copy className="h-3 w-3" /> Copy
+      </button>
+      <button
+        onClick={handleDefine}
+        className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary transition-colors"
+      >
+        <Book className="h-3 w-3" /> Define
       </button>
       <button
         onClick={handleHighlight}

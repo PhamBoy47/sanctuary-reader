@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
-import { ListTree, Minus, Plus, ChevronLeft, ChevronRight } from "lucide-react";
+import { ListTree, Minus, Plus, ChevronLeft, ChevronRight, Book } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
 import { EpubStatusBar } from "@/components/EpubStatusBar";
@@ -21,6 +21,9 @@ import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
 import { updateProgress } from "@/lib/fileStore";
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
+import { DictionaryPopover } from "@/components/DictionaryPopover";
+import { useAppSettings } from "@/lib/appSettings";
+import { lookupWord } from "@/lib/dictionaryCore";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -321,6 +324,7 @@ function flatToc(items: EpubTocItem[]): EpubTocItem[] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function EpubViewer({ file, onBack }: EpubViewerProps) {
+  const { settings: appSettings } = useAppSettings();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const epubRef = useRef<ParsedEpub | null>(null);
   const isInitialLoad = useRef(true);
@@ -336,6 +340,66 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [chapterLoading, setChapterLoading] = useState(false);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+
+  const [dictionaryQuery, setDictionaryQuery] = useState<{ word: string, x: number, y: number, results: string[] } | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<{ x: number, y: number, text: string } | null>(null);
+
+  const handleDefine = useCallback(async (word: string, x: number, y: number) => {
+    const results = await lookupWord(word); 
+    setDictionaryQuery({ word, x, y, results });
+    setSelectionMenu(null);
+  }, []);
+
+  // ── Iframe Selection Bridge ──────────────────────────────────────────
+  useEffect(() => {
+    const frame = iframeRef.current;
+    if (!frame || !ready) return;
+
+    const onMouseUp = () => {
+      const win = frame.contentWindow;
+      const selection = win?.getSelection();
+      const text = selection?.toString().trim();
+      
+      if (!text || text.length > 50) {
+        setSelectionMenu(null);
+        return;
+      }
+
+      const range = selection!.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const frameRect = frame.getBoundingClientRect();
+
+      setSelectionMenu({
+        x: rect.left + rect.width / 2 + frameRect.left,
+        y: rect.top + frameRect.top,
+        text,
+      });
+    };
+
+    const onMouseDown = () => {
+      if (dictionaryQuery) setDictionaryQuery(null);
+      setSelectionMenu(null);
+    };
+
+    const setupListeners = () => {
+      const doc = frame.contentDocument;
+      if (!doc) return;
+      doc.addEventListener("mouseup", onMouseUp);
+      doc.addEventListener("mousedown", onMouseDown);
+    };
+
+    frame.addEventListener("load", setupListeners);
+    setupListeners();
+
+    return () => {
+      const doc = frame.contentDocument;
+      if (doc) {
+        doc.removeEventListener("mouseup", onMouseUp);
+        doc.removeEventListener("mousedown", onMouseDown);
+      }
+    };
+  }, [ready, spineIndex, dictionaryQuery]);
+
 
   // ── Parse EPUB once ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -555,11 +619,12 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             title="Book content"
           />
 
-          {/* Loading overlay */}
-          {(!ready || chapterLoading) && !error && (
+          {/* Loading overlay: only show on initial load. Chapter switches 
+              will be nearly instant due to srcdoc, avoiding jarring flickers. */}
+          {!ready && !error && (
             <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-10 pointer-events-none">
               <p className="text-muted-foreground animate-pulse">
-                {ready ? "Loading chapter…" : "Opening book…"}
+                Opening book…
               </p>
             </div>
           )}
@@ -596,6 +661,34 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         onSave={() => { handleSave(); setShowUnsavedDialog(false); onBack(); }}
         onDiscard={() => { setHasUnsavedChanges(false); setShowUnsavedDialog(false); onBack(); }}
       />
+
+      {/* ── Selection Context Menu ── */}
+      {selectionMenu && (
+        <div 
+          className="fixed z-50 flex items-center gap-0.5 rounded-lg glass-surface border border-border px-1.5 py-1 shadow-xl animate-in fade-in zoom-in duration-200"
+          style={{ 
+            left: selectionMenu.x, 
+            top: selectionMenu.y,
+            transform: "translate(-50%, -120%)"
+          }}
+        >
+          <button 
+            onClick={() => handleDefine(selectionMenu.text, selectionMenu.x, selectionMenu.y)}
+            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors"
+          >
+            <Book className="h-3 w-3" /> Define
+          </button>
+        </div>
+      )}
+
+      {dictionaryQuery && (
+        <DictionaryPopover
+          word={dictionaryQuery.word}
+          definitions={dictionaryQuery.results}
+          position={{ x: dictionaryQuery.x, y: dictionaryQuery.y }}
+          onClose={() => setDictionaryQuery(null)}
+        />
+      )}
     </div>
   );
 }

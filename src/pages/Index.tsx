@@ -12,18 +12,29 @@ import {
   FileEntry, getFiles, saveFile, deleteFile,
   detectFileType, generateId,
 } from "@/lib/fileStore";
+import { extractEpubCover } from "@/lib/epubThumb";
+import { useAppSettings } from "@/lib/appSettings";
+import { AppSettingsDialog } from "@/components/AppSettingsDialog";
 
 export default function Index() {
+  const { settings } = useAppSettings();
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [search, setSearch] = useState("");
   const [activeFile, setActiveFile] = useState<FileEntry | null>(null);
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadFiles = useCallback(async () => {
     const all = await getFiles();
-    setFiles(all.sort((a, b) => b.lastOpened - a.lastOpened));
-  }, []);
+    const sorted = [...all].sort((a, b) => {
+      switch (settings.sortBy) {
+        case 'name': return a.name.localeCompare(b.name);
+        case 'size': return b.size - a.size;
+        case 'progress': return b.progress - a.progress;
+        default: return b.lastOpened - a.lastOpened;
+      }
+    });
+    setFiles(sorted);
+  }, [settings.sortBy]);
 
   useEffect(() => { loadFiles(); }, [loadFiles]);
 
@@ -33,6 +44,12 @@ export default function Index() {
       const type = detectFileType(f.name);
       if (!type) continue;
       const data = await f.arrayBuffer();
+      
+      let coverUrl: string | undefined;
+      if (type === 'epub') {
+        coverUrl = await extractEpubCover(data) || undefined;
+      }
+
       const entry: FileEntry = {
         id: generateId(),
         name: f.name,
@@ -40,6 +57,7 @@ export default function Index() {
         size: f.size,
         lastOpened: Date.now(),
         progress: 0,
+        coverUrl,
         data,
       };
       await saveFile(entry);
@@ -95,6 +113,13 @@ export default function Index() {
               <h1 className="text-xl font-semibold text-foreground tracking-tight">
                 Sanctuary <span className="text-primary">Reader</span>
               </h1>
+              {settings.userName && (
+                <div className="hidden sm:block ml-2 px-2 py-0.5 rounded-full bg-primary/10 border border-primary/20">
+                  <span className="text-[10px] font-medium text-primary uppercase tracking-wider">
+                    {settings.userName}
+                  </span>
+                </div>
+              )}
             </div>
             <div className="flex-1 max-w-md ml-8">
               <div className="relative">
@@ -108,12 +133,8 @@ export default function Index() {
               </div>
             </div>
             <div className="flex items-center gap-2 ml-auto">
-              <Button
-                variant="ghost" size="icon"
-                onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
-              >
-                {viewMode === "grid" ? <List className="h-4 w-4" /> : <LayoutGrid className="h-4 w-4" />}
-              </Button>
+              <AppSettingsDialog />
+              <div className="w-px h-4 bg-border mx-1" />
               <input
                 ref={inputRef}
                 type="file"
@@ -163,7 +184,7 @@ export default function Index() {
                 </div>
               )}
               <AnimatePresence mode="wait">
-                {viewMode === "grid" ? (
+                {settings.libraryLayout === "grid" ? (
                   <motion.div
                     key="grid"
                     initial={{ opacity: 0 }}
@@ -174,7 +195,7 @@ export default function Index() {
                       <FileCard key={f.id} file={f} onOpen={handleOpen} onDelete={handleDelete} />
                     ))}
                   </motion.div>
-                ) : (
+                ) : settings.libraryLayout === "list" ? (
                   <motion.div
                     key="list"
                     initial={{ opacity: 0 }}
@@ -189,14 +210,46 @@ export default function Index() {
                         className="flex items-center gap-4 p-3 rounded-lg bg-card border border-border hover:border-primary/30 cursor-pointer transition-colors"
                         onClick={() => handleOpen(f)}
                       >
-                        <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-muted text-muted-foreground">
-                          {f.type}
-                        </span>
-                        <span className="text-sm font-medium text-foreground flex-1 truncate">{f.name}</span>
-                        <div className="w-20 h-1 rounded-full bg-muted overflow-hidden">
-                          <div className="h-full bg-primary" style={{ width: `${f.progress}%` }} />
+                        <div className={`w-8 h-10 rounded shrink-0 bg-gradient-to-br ${f.type === 'pdf' ? 'from-red-500/20 to-red-900/10' : 'from-emerald-500/20 to-emerald-900/10'} flex items-center justify-center overflow-hidden border border-border/50`}>
+                          {f.coverUrl ? (
+                            <img src={f.coverUrl} className="w-full h-full object-cover" alt="" />
+                          ) : (
+                            <span className="text-[8px] font-mono uppercase text-muted-foreground/60">{f.type}</span>
+                          )}
                         </div>
-                        <span className="text-xs text-muted-foreground">{f.progress}%</span>
+                        <span className="text-sm font-medium text-foreground flex-1 truncate">{f.name}</span>
+                        <div className="w-24 h-1 rounded-full bg-muted overflow-hidden">
+                          <div className="h-full bg-primary transition-all duration-500" style={{ width: `${f.progress}%` }} />
+                        </div>
+                        <span className="text-xs text-muted-foreground tabular-nums">{f.progress}%</span>
+                      </motion.div>
+                    ))}
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="compact"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3"
+                  >
+                    {filtered.map((f) => (
+                      <motion.div
+                        key={f.id}
+                        whileHover={{ y: -2 }}
+                        className="flex flex-col gap-1.5 p-2 rounded-md bg-secondary/20 border border-transparent hover:border-primary/30 cursor-pointer transition-all group"
+                        onClick={() => handleOpen(f)}
+                      >
+                        <div className={`aspect-[3/4] rounded bg-muted/50 flex items-center justify-center overflow-hidden relative border border-border/40 bg-gradient-to-br ${f.type === 'pdf' ? 'from-red-500/10 to-red-900/5' : 'from-emerald-500/10 to-emerald-900/5'}`}>
+                          {f.coverUrl ? (
+                            <img src={f.coverUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt="" />
+                          ) : (
+                            <span className="text-[10px] font-bold text-muted-foreground/40 uppercase">{f.type}</span>
+                          )}
+                          <div className="absolute bottom-0 left-0 right-0 h-1 bg-primary/20">
+                            <div className="h-full bg-primary" style={{ width: `${f.progress}%` }} />
+                          </div>
+                        </div>
+                        <span className="text-[11px] font-medium truncate group-hover:text-primary transition-colors">{f.name}</span>
                       </motion.div>
                     ))}
                   </motion.div>

@@ -37,14 +37,25 @@ export function FileCard({ file, onOpen, onDelete }: FileCardProps) {
       onClick={() => onOpen(file)}
     >
       {/* Cover / Icon area */}
-      <div className={`relative h-44 bg-gradient-to-br ${typeColors[file.type]} flex items-center justify-center`}>
-        <Icon className="h-16 w-16 text-muted-foreground/40" />
-        <span className={`absolute top-3 right-3 text-[10px] font-mono uppercase px-2 py-0.5 rounded-full ${typeBadgeColors[file.type]}`}>
+      <div className={`relative h-44 bg-gradient-to-br ${typeColors[file.type]} flex items-center justify-center overflow-hidden`}>
+        {file.coverUrl ? (
+          <img 
+            src={file.coverUrl} 
+            alt={file.name} 
+            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" 
+          />
+        ) : (
+          <Icon className="h-16 w-16 text-muted-foreground/40" />
+        )}
+        
+        <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent pointer-events-none" />
+
+        <span className={`absolute top-3 right-3 text-[10px] font-mono uppercase px-2 py-0.5 rounded-full z-10 ${typeBadgeColors[file.type]}`}>
           {file.type}
         </span>
         <button
           onClick={(e) => { e.stopPropagation(); onDelete(file.id); }}
-          className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-destructive/80 hover:bg-destructive"
+          className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-destructive/80 hover:bg-destructive z-10"
         >
           <Trash2 className="h-3.5 w-3.5 text-destructive-foreground" />
         </button>

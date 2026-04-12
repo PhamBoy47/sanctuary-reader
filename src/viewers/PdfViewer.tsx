@@ -23,6 +23,9 @@ import { toast } from "sonner";
 import type { FileEntry } from "@/lib/fileStore";
 import { updateProgress } from "@/lib/fileStore";
 import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
+import { DictionaryPopover } from "@/components/DictionaryPopover";
+import { useAppSettings } from "@/lib/appSettings";
+import { lookupWord } from "@/lib/dictionaryCore";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
@@ -155,9 +158,11 @@ async function searchPdf(pdfDoc: pdfjsLib.PDFDocumentProxy, query: string): Prom
 interface PdfViewerProps { file: FileEntry; onBack: () => void; }
 
 export function PdfViewer({ file, onBack }: PdfViewerProps) {
+  const { settings: appSettings } = useAppSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [dictionaryQuery, setDictionaryQuery] = useState<{ word: string, x: number, y: number, results: string[] } | null>(null);
   const [page, setPage] = useState(1);
   const pageRef = useRef(1);
   const [totalPages, setTotalPages] = useState(0);
@@ -306,6 +311,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   }, [file.data]);
 
   /* Navigation history */
+  const handleDefine = useCallback(async (word: string, x: number, y: number) => {
+    const results = await lookupWord(word); 
+    setDictionaryQuery({ word, x, y, results });
+  }, []);
+
   const navigateToPage = useCallback((p: number | ((prev: number) => number)) => {
     isNavigating.current = true;
     setPage((prevPage) => {
@@ -692,11 +702,18 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           const filter = getPageFilter(settings);
           wrapper.style.filter = filter !== "none" ? filter : "";
 
-          // FIX 6: If dimensions changed (zoom/rotation), invalidate canvases
-          // for this wrapper so the scroll handler re-renders them. We do NOT
-          // destroy the wrapper itself — the DOM node stays, preserving layout.
+          // FIX 6: If dimensions changed (zoom/rotation), we do NOT nuke the children 
+          // immediately. Instead, we let the existing canvas stretch/shrink to 
+          // fill the new wrapper dimensions until renderPage swaps it out.
           if (!isNew && dimensionsChanged) {
-            wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
+            const oldCanvas = wrapper.querySelector(".pdf-canvas") as HTMLCanvasElement;
+            if (oldCanvas) {
+              oldCanvas.style.width = newW;
+              oldCanvas.style.height = newH;
+            }
+            // Hide layers that can't be scaled nicely via CSS
+            wrapper.querySelectorAll('.textLayer, .annotationLayer, .symbol-layer').forEach(el => (el as HTMLElement).style.display = 'none');
+            
             renderedPagesRef.current.delete(i);
             if (abortControllersRef.current.has(i)) {
               abortControllersRef.current.get(i)?.abort();
@@ -1314,6 +1331,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
             containerRef={viewportRef}
             onSearchText={handleSearchFromContext}
             onHighlightText={handleHighlightText}
+            onDefineText={handleDefine}
             onBookmarkPage={handleBookmarkPage}
             highlightColor={highlightColor}
           />
@@ -1350,6 +1368,15 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           onBack();
         }}
       />
+
+      {dictionaryQuery && (
+        <DictionaryPopover
+          word={dictionaryQuery.word}
+          definitions={dictionaryQuery.results}
+          position={{ x: dictionaryQuery.x, y: dictionaryQuery.y }}
+          onClose={() => setDictionaryQuery(null)}
+        />
+      )}
     </div>
   );
 }

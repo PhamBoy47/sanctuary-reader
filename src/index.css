@@ -6,7 +6,12 @@
 
 @layer base {
   :root {
-    --background: 220 20% 7%;
+    /* Base HSL values for themes */
+    --background-hue: 220;
+    --background-sat: 20%;
+    --background-lum: 7%;
+    
+    --background: var(--background-hue) var(--background-sat) var(--background-lum);
     --foreground: 40 20% 92%;
 
     --card: 220 18% 10%;
@@ -15,7 +20,9 @@
     --popover: 220 18% 12%;
     --popover-foreground: 40 20% 92%;
 
-    --primary: 35 90% 55%;
+    /* Dynamic Primary (Accent) */
+    --primary-val: 35 90% 55%; 
+    --primary: var(--primary-val);
     --primary-foreground: 220 20% 7%;
 
     --secondary: 220 15% 16%;
@@ -24,7 +31,7 @@
     --muted: 220 15% 14%;
     --muted-foreground: 220 10% 50%;
 
-    --accent: 35 70% 45%;
+    --accent: var(--primary-val);
     --accent-foreground: 40 20% 95%;
 
     --destructive: 0 72% 51%;
@@ -32,26 +39,64 @@
 
     --border: 220 15% 18%;
     --input: 220 15% 18%;
-    --ring: 35 90% 55%;
+    --ring: var(--primary-val);
 
     --radius: 0.75rem;
 
     --sidebar-background: 220 20% 9%;
     --sidebar-foreground: 40 15% 80%;
-    --sidebar-primary: 35 90% 55%;
-    --sidebar-primary-foreground: 220 20% 7%;
-    --sidebar-accent: 220 15% 14%;
-    --sidebar-accent-foreground: 40 15% 80%;
     --sidebar-border: 220 15% 16%;
-    --sidebar-ring: 35 90% 55%;
 
-    --sanctuary-glow: 35 90% 55%;
-    --sanctuary-warm: 25 80% 50%;
+    --sanctuary-glow: var(--primary-val);
     --sanctuary-surface: 220 18% 12%;
-    --sanctuary-overlay: 220 20% 7% / 0.8;
+    
+    /* Dynamic Glass Opacity */
+    --glass-opacity: 0.6;
+    --sanctuary-overlay: var(--background-hue) var(--background-sat) var(--background-lum) / var(--glass-opacity);
 
     --font-sans: 'Space Grotesk', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  /* Theme: Midnight (OLED) */
+  .theme-midnight {
+    --background: 0 0% 0%;
+    --card: 0 0% 5%;
+    --popover: 0 0% 7%;
+    --secondary: 0 0% 10%;
+    --muted: 0 0% 8%;
+    --border: 0 0% 12%;
+    --sanctuary-surface: 0 0% 8%;
+  }
+
+  /* Theme: Forest */
+  .theme-forest {
+    --background: 140 20% 6%;
+    --card: 140 15% 10%;
+    --popover: 140 15% 12%;
+    --secondary: 140 10% 15%;
+    --muted: 140 10% 12%;
+    --border: 140 10% 18%;
+    --sanctuary-surface: 140 15% 12%;
+  }
+
+  /* Theme: Arctic (Light) */
+  .theme-arctic {
+    --background: 210 20% 98%;
+    --foreground: 220 30% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 30% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 30% 20%;
+    --secondary: 210 15% 92%;
+    --secondary-foreground: 210 15% 30%;
+    --muted: 210 15% 95%;
+    --muted-foreground: 210 10% 45%;
+    --border: 210 15% 88%;
+    --input: 210 15% 88%;
+    --primary-foreground: 0 0% 100%;
+    --sanctuary-surface: 0 0% 100%;
+    --glass-opacity: 0.8;
   }
 }
 
