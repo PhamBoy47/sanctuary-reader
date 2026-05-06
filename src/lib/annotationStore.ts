@@ -19,8 +19,14 @@ export interface Highlight {
   color: string;
   /** The highlighted text content */
   text: string;
-  /** Serialised range info for re-rendering */
+  /** Serialised range info for re-rendering (PDF) */
   rects: { x: number; y: number; w: number; h: number }[];
+  /** EPUB: character offset from chapter text start */
+  charOffset?: number;
+  /** EPUB: length of highlighted text in characters */
+  charLength?: number;
+  /** EPUB: Canonical Fragment Identifier for robust anchoring */
+  cfi?: string;
   createdAt: number;
 }
 
@@ -145,6 +151,9 @@ export async function addHighlight(
   color: string,
   text: string,
   rects: Highlight["rects"],
+  charOffset?: number,
+  charLength?: number,
+  cfi?: string,
 ): Promise<Highlight> {
   const db = await openDB();
   const highlight: Highlight = {
@@ -154,6 +163,9 @@ export async function addHighlight(
     color,
     text,
     rects,
+    charOffset,
+    charLength,
+    cfi,
     createdAt: Date.now(),
   };
   return new Promise((resolve, reject) => {
@@ -217,6 +229,38 @@ export async function removeSymbolAnnotation(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SYMBOLS_STORE, "readwrite");
     tx.objectStore(SYMBOLS_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ── Restore functions (for undo/redo — re-insert with original ID) ──
+
+export async function restoreBookmark(bookmark: Bookmark): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(BOOKMARKS_STORE, "readwrite");
+    tx.objectStore(BOOKMARKS_STORE).put(bookmark);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function restoreHighlight(highlight: Highlight): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(HIGHLIGHTS_STORE, "readwrite");
+    tx.objectStore(HIGHLIGHTS_STORE).put(highlight);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function restoreSymbolAnnotation(ann: SymbolAnnotation): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYMBOLS_STORE, "readwrite");
+    tx.objectStore(SYMBOLS_STORE).put(ann);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

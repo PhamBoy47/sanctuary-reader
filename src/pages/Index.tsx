@@ -69,6 +69,42 @@ export default function Index() {
     }
   }, [loadFiles]);
 
+  // Deep linking and file association handler
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/plugin-deep-link").then((dl) => {
+      dl.onOpenUrl(async (urls) => {
+        const fs = await import("@tauri-apps/plugin-fs");
+        const newFiles: File[] = [];
+        for (const url of urls) {
+          try {
+            let path = url;
+            if (path.startsWith("file://")) {
+              path = decodeURIComponent(path.replace("file://", ""));
+            }
+            // Strip leading slash on Windows (e.g. /C:/...)
+            if (navigator.userAgent.includes("Win") && path.startsWith("/") && path.charAt(2) === ":") {
+              path = path.substring(1);
+            }
+            const bytes = await fs.readFile(path);
+            const name = path.split(/[\\/]/).pop() || "unknown";
+            let type = "application/octet-stream";
+            if (name.toLowerCase().endsWith(".pdf")) type = "application/pdf";
+            if (name.toLowerCase().endsWith(".epub")) type = "application/epub+zip";
+            newFiles.push(new File([bytes], name, { type }));
+          } catch (e) {
+            console.error("Failed to read deep-link file", e);
+          }
+        }
+        if (newFiles.length > 0) importFiles(newFiles);
+      }).then((un) => {
+        unlisten = un;
+      });
+    }).catch(() => { /* not in tauri */ });
+
+    return () => { if (unlisten) unlisten(); };
+  }, [importFiles]);
+
   const handleOpen = useCallback((file: FileEntry) => {
     setActiveFile(file);
   }, []);

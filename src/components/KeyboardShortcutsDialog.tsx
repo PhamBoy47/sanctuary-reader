@@ -37,6 +37,8 @@ const shortcuts: ShortcutGroup[] = [
   {
     name: "Tools & Annotations",
     keys: [
+      { key: "Ctrl + Z", label: "Undo last annotation action" },
+      { key: "Ctrl + Y", label: "Redo last undone action" },
       { key: "Ctrl + S", label: "Save Progress / Annotations" },
       { key: "Ctrl + F", label: "Search inside document" },
       { key: "Shift + H", label: "Highlight selection" },

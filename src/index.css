@@ -332,3 +332,67 @@
   outline: 2px solid rgb(248 134 5);
   outline-offset: 1px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PRINT STYLES
+   Hide all app chrome and show only the rendered PDF canvases so the
+   OS print dialog produces a clean document output.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+@media print {
+  /* Reset page margins — the PDF canvas already includes its own margins */
+  @page {
+    margin: 0;
+  }
+
+  /* Hide everything by default */
+  body * {
+    visibility: hidden;
+  }
+
+  /* Show only the pdf-page wrappers and their canvas children */
+  .pdf-page,
+  .pdf-page .pdf-canvas {
+    visibility: visible !important;
+  }
+
+  /* Strip app background */
+  body {
+    background: white !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Make each page a full print page */
+  .pdf-page {
+    page-break-after: always;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    background: white !important;
+    margin: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    position: relative !important;
+    overflow: visible !important;
+  }
+
+  .pdf-page:last-child {
+    page-break-after: auto;
+  }
+
+  /* Canvas should fill the page width */
+  .pdf-canvas {
+    position: relative !important;
+    width: 100% !important;
+    height: auto !important;
+  }
+
+  /* Hide all overlay layers, text layers, annotation layers */
+  .textLayer,
+  .annotationLayer,
+  .highlight-layer,
+  .search-highlight-layer,
+  .symbol-layer {
+    display: none !important;
+  }
+}

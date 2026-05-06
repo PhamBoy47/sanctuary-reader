@@ -1,6 +1,28 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload } from "lucide-react";
+
+// Lazy-load Tauri APIs so web build doesn't crash
+type TauriWindowModule = typeof import("@tauri-apps/api/window");
+type TauriFsModule = typeof import("@tauri-apps/plugin-fs");
+
+let tauriWindowApi: TauriWindowModule | null = null;
+let tauriFsApi: TauriFsModule | null = null;
+
+async function getTauriApis() {
+  if (tauriWindowApi && tauriFsApi) return { window: tauriWindowApi, fs: tauriFsApi };
+  try {
+    const [win, fs] = await Promise.all([
+      import("@tauri-apps/api/window"),
+      import("@tauri-apps/plugin-fs")
+    ]);
+    tauriWindowApi = win;
+    tauriFsApi = fs;
+    return { window: win, fs };
+  } catch {
+    return null;
+  }
+}
 
 interface DropZoneProps {
   onFilesDropped: (files: File[]) => void;
@@ -9,6 +31,44 @@ interface DropZoneProps {
 
 export function DropZone({ onFilesDropped, children }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
+
+  // Tauri native drop handling
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    
+    getTauriApis().then((apis) => {
+      if (!apis) return;
+      
+      apis.window.getCurrentWindow().onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setDragging(true);
+        } else if (event.payload.type === "leave") {
+          setDragging(false);
+        } else if (event.payload.type === "drop") {
+          setDragging(false);
+          const paths = event.payload.paths;
+          
+          // Convert native paths to JS File objects
+          Promise.all(paths.map(async (p) => {
+            const bytes = await apis.fs.readFile(p);
+            const name = p.split(/[\\/]/).pop() || "unknown";
+            let type = "application/octet-stream";
+            if (name.toLowerCase().endsWith(".pdf")) type = "application/pdf";
+            if (name.toLowerCase().endsWith(".epub")) type = "application/epub+zip";
+            return new File([bytes], name, { type });
+          })).then((files) => {
+            if (files.length > 0) onFilesDropped(files);
+          }).catch(console.error);
+        }
+      }).then((un) => {
+        unlisten = un;
+      });
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [onFilesDropped]);
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault();

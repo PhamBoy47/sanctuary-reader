@@ -5,11 +5,17 @@ import path from "path";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
+    port: 1420,
+    strictPort: true,
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
     hmr: {
       overlay: false,
     },
   },
+  clearScreen: false,
+  envPrefix: ['VITE_', 'TAURI_'],
   plugins: [react()],
   resolve: {
     alias: {

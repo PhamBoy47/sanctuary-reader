@@ -1,0 +1,69 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Sanctuary Reader",
+  "version": "0.1.0",
+  "identifier": "com.sanctuary.reader",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Sanctuary Reader",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["pdf"],
+        "mimeType": "application/pdf",
+        "description": "PDF Document"
+      },
+      {
+        "ext": ["epub"],
+        "mimeType": "application/epub+zip",
+        "description": "EPUB Document"
+      }
+    ],
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "cli": {
+      "description": "Sanctuary Reader CLI",
+      "args": [
+        {
+          "name": "file",
+          "index": 1,
+          "description": "Path to the PDF or EPUB file to open"
+        }
+      ]
+    },
+    "deep-link": {
+      "schemes": ["sanctuary"]
+    }
+  }
+}

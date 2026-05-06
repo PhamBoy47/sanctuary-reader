@@ -11,27 +11,52 @@ interface PdfSearchBarProps {
   onPrevResult: () => void;
   currentResult: number;
   totalResults: number;
+  /**
+   * Pre-seed the search bar when it opens from a context menu / selection.
+   * This value is only read ONCE when isOpen transitions from false → true.
+   * It does NOT create a live binding, so typing after open is never interrupted.
+   */
+  seed?: string;
 }
 
 export function PdfSearchBar({
   isOpen, onClose, onSearch, onNextResult, onPrevResult,
-  currentResult, totalResults,
+  currentResult, totalResults, seed = ""
 }: PdfSearchBarProps) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const onSearchRef = useRef(onSearch);
+  useEffect(() => { onSearchRef.current = onSearch; }, [onSearch]);
 
+  // Fire ONLY when the bar transitions open (false → true). Capture seed at that moment.
+  const prevOpenRef = useRef(false);
   useEffect(() => {
-    if (isOpen) {
-      setTimeout(() => inputRef.current?.focus(), 100);
-    } else {
+    const justOpened = isOpen && !prevOpenRef.current;
+    prevOpenRef.current = isOpen;
+
+    if (justOpened) {
+      // Seed the input with whatever was passed at open time
+      setQuery(seed);
+      if (seed) {
+        onSearchRef.current(seed);
+      }
+      setTimeout(() => {
+        inputRef.current?.focus();
+        if (seed) inputRef.current?.select();
+      }, 80);
+    }
+
+    if (!isOpen) {
       setQuery("");
     }
+    // seed intentionally excluded — we only want the value that was current when isOpen fired
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   const handleChange = useCallback((value: string) => {
     setQuery(value);
-    onSearch(value);
-  }, [onSearch]);
+    onSearchRef.current(value);
+  }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -56,7 +81,7 @@ export function PdfSearchBar({
       />
       {query && (
         <span className="text-[10px] text-muted-foreground font-mono shrink-0">
-          {totalResults > 0 ? `${currentResult}/${totalResults}` : "0"}
+          {totalResults > 0 ? `${currentResult}/${totalResults}` : "0 results"}
         </span>
       )}
       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onPrevResult} disabled={totalResults === 0}>

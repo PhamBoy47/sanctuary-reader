@@ -14,9 +14,15 @@ interface BookmarkPanelProps {
   currentPage: number;
   onPageSelect: (page: number) => void;
   version?: number;
+  /** Label prefix for page indicator (default: "p.") */
+  pageLabel?: string;
+  /** If provided, called instead of direct store add — for undo/redo integration */
+  onAdd?: (page: number, label?: string) => Promise<void>;
+  /** If provided, called instead of direct store remove — for undo/redo integration */
+  onRemove?: (id: string, bookmark: BookmarkType) => Promise<void>;
 }
 
-export function BookmarkPanel({ fileId, currentPage, onPageSelect, version }: BookmarkPanelProps) {
+export function BookmarkPanel({ fileId, currentPage, onPageSelect, version, pageLabel = "p.", onAdd, onRemove }: BookmarkPanelProps) {
   const [bookmarks, setBookmarks] = useState<BookmarkType[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -34,13 +40,22 @@ export function BookmarkPanel({ fileId, currentPage, onPageSelect, version }: Bo
       toast.info("Page already bookmarked");
       return;
     }
-    await addBookmark(fileId, currentPage);
+    if (onAdd) {
+      await onAdd(currentPage);
+    } else {
+      await addBookmark(fileId, currentPage);
+    }
     toast.success(`Bookmarked page ${currentPage}`);
     reload();
   };
 
   const handleRemove = async (id: string) => {
-    await removeBookmark(id);
+    if (onRemove) {
+      const bm = bookmarks.find((b) => b.id === id);
+      if (bm) await onRemove(id, bm);
+    } else {
+      await removeBookmark(id);
+    }
     toast.success("Bookmark removed");
     reload();
   };
@@ -106,7 +121,7 @@ export function BookmarkPanel({ fileId, currentPage, onPageSelect, version }: Bo
                       {bm.label}
                     </span>
                     <span className="text-[10px] text-muted-foreground font-mono shrink-0">
-                      p.{bm.page}
+                      {pageLabel}{bm.page}
                     </span>
                     <div className="hidden group-hover:flex items-center gap-0.5">
                       <button className="p-0.5 hover:text-primary" onClick={() => handleEdit(bm)}>

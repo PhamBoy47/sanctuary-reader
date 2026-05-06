@@ -27,11 +27,16 @@ interface HighlightPanelProps {
   onColorChange: (color: string) => void;
   version?: number;
   onAnnotationChange?: () => void;
+  /** Label prefix for page indicator (default: "p.") */
+  pageLabel?: string;
+  /** If provided, called instead of direct store remove — for undo/redo integration */
+  onRemoveHighlight?: (id: string, highlight: Highlight) => Promise<void>;
 }
 
 export function HighlightPanel({
   fileId, currentPage, onPageSelect,
   activeColor, onColorChange, version, onAnnotationChange,
+  pageLabel = "p.", onRemoveHighlight,
 }: HighlightPanelProps) {
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [showCustom, setShowCustom] = useState(false);
@@ -46,7 +51,12 @@ export function HighlightPanel({
   useEffect(() => { reload(); }, [reload, version]);
 
   const handleRemove = async (id: string) => {
-    await removeHighlight(id);
+    if (onRemoveHighlight) {
+      const hl = highlights.find((h) => h.id === id);
+      if (hl) await onRemoveHighlight(id, hl);
+    } else {
+      await removeHighlight(id);
+    }
     toast.success("Highlight removed");
     reload();
     onAnnotationChange?.();
@@ -150,7 +160,7 @@ export function HighlightPanel({
                   style={{ backgroundColor: hl.color }}
                 />
                 <span className="flex-1 text-foreground line-clamp-2">{hl.text}</span>
-                <span className="text-[10px] text-muted-foreground font-mono shrink-0">p.{hl.page}</span>
+                <span className="text-[10px] text-muted-foreground font-mono shrink-0">{pageLabel}{hl.page}</span>
                 <button
                   className="hidden group-hover:block p-0.5 hover:text-destructive shrink-0"
                   onClick={(e) => { e.stopPropagation(); handleRemove(hl.id); }}

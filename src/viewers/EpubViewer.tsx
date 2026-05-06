@@ -5,14 +5,11 @@
  * project), parses the OPF/NCX/NAV structure ourselves, rewrites all
  * relative asset URLs to inline data: URIs, and renders each spine chapter
  * inside a sandboxed <iframe srcdoc>.
- *
- * This is the only approach that is guaranteed to work in a Vite + ESM
- * environment because it sidesteps every epubjs CJS/global/JSZip quirk.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import JSZip from "jszip";
-import { ListTree, Minus, Plus, ChevronLeft, ChevronRight, Book } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
+import { ListTree, Minus, Plus, Book, Search, Bookmark as BookmarkIcon, Highlighter, Copy, Download, GripVertical, ChevronLeft, ChevronRight, Columns, ScrollText } from "lucide-react";
+import { ExportDialog } from "@/components/ExportDialog";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
 import { EpubStatusBar } from "@/components/EpubStatusBar";
@@ -24,325 +21,81 @@ import { UnsavedChangesDialog } from "@/components/UnsavedChangesDialog";
 import { DictionaryPopover } from "@/components/DictionaryPopover";
 import { useAppSettings } from "@/lib/appSettings";
 import { lookupWord } from "@/lib/dictionaryCore";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
+import { useAnnotationHistory } from "@/hooks/useAnnotationHistory";
+import { getHighlights, type Highlight } from "@/lib/annotationStore";
+import { BookmarkPanel } from "@/components/BookmarkPanel";
+import { HighlightPanel } from "@/components/HighlightPanel";
+import { PdfSearchBar } from "@/components/PdfSearchBar";
+import { useEpubStore } from "@/store/useEpubStore";
+import { useEpubEngine } from "@/hooks/useEpubEngine";
+import { useSearchWorker } from "@/hooks/useSearchWorker";
+import { useEpubPagination } from "@/hooks/useEpubPagination";
+import { EpubTocItem } from "@/types/epub";
+import { generateCfi, resolveCfi } from "@/lib/epubCfi";
 
 interface EpubViewerProps { file: FileEntry; onBack: () => void; }
 
-type ThemeMode = "original" | "light" | "sepia" | "warm" | "cool" | "dark" | "midnight";
-
-const themes: Record<ThemeMode, { bg: string; fg: string; link: string; label: string }> = {
-  original: { bg: "#ffffff", fg: "#000000", link: "#0066cc", label: "Original" },
-  // A slightly warmer, softer light theme (inspired by classic books)
-  light: { bg: "#fdfdfc", fg: "#333333", link: "#2563eb", label: "Light" },
-  // A high-contrast sepia (inspired by Apple Books)
-  sepia: { bg: "#fbf0d9", fg: "#5f4b32", link: "#d97706", label: "Sepia" },
-  // A soft, natural warm theme
-  warm: { bg: "#fff8f0", fg: "#4a3f35", link: "#ea580c", label: "Warm" },
-  // A crisp, icy cool theme (Nord-inspired light)
-  cool: { bg: "#eceff4", fg: "#2e3440", link: "#5e81ac", label: "Cool" },
-  // A modern, sleek dark theme (inspired by Tailwind / Vercel)
-  dark: { bg: "#0f172a", fg: "#e2e8f0", link: "#38bdf8", label: "Dark" },
-  // True OLED Black (Saves battery on mobile devices, high contrast)
-  midnight: { bg: "#000000", fg: "#d1d5db", link: "#818cf8", label: "Midnight" },
-};
-
-interface SpineItem { id: string; href: string; }
-interface ManifestItem { id: string; href: string; mediaType: string; }
-
-interface EpubTocItem extends TocItem {
-  href: string;
-  children?: EpubTocItem[];
-}
-
-interface ParsedEpub {
-  zip: JSZip;
-  spine: SpineItem[];
-  toc: EpubTocItem[];
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Path helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function getDir(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i >= 0 ? path.slice(0, i + 1) : "";
-}
-
-/** Resolve a relative path against a base directory (no fragment) */
-function resolvePath(baseDir: string, rel: string): string {
-  if (!rel || /^(https?:|data:|#)/.test(rel)) return rel;
-  const clean = rel.split("#")[0];
-  const parts = (baseDir + clean).split("/");
-  const out: string[] = [];
-  for (const p of parts) {
-    if (p === "..") out.pop();
-    else if (p !== ".") out.push(p);
-  }
-  return out.join("/");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// EPUB structure parsers
-// ─────────────────────────────────────────────────────────────────────────────
-
-function parseContainerXml(xml: string): string {
-  const m = xml.match(/full-path="([^"]+)"/);
-  if (!m) throw new Error("container.xml: no full-path attribute found");
-  return m[1];
-}
-
-function parseOpf(
-  xml: string,
-  opfDir: string,
-): { manifest: Record<string, ManifestItem>; spine: SpineItem[] } {
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-
-  const manifest: Record<string, ManifestItem> = {};
-  doc.querySelectorAll("manifest item").forEach((el) => {
-    const id = el.getAttribute("id") ?? "";
-    const href = el.getAttribute("href") ?? "";
-    const mediaType = el.getAttribute("media-type") ?? "";
-    manifest[id] = { id, href: opfDir + href, mediaType };
-  });
-
-  const spine: SpineItem[] = [];
-  doc.querySelectorAll("spine itemref").forEach((el) => {
-    const idref = el.getAttribute("idref") ?? "";
-    if (manifest[idref]) spine.push({ id: idref, href: manifest[idref].href });
-  });
-
-  return { manifest, spine };
-}
-
-function parseNcx(xml: string, opfDir: string): EpubTocItem[] {
-  const doc = new DOMParser().parseFromString(xml, "application/xml");
-  let n = 0;
-  function walk(nodes: Element[]): EpubTocItem[] {
-    return nodes.map((el) => {
-      const label = el.querySelector("navLabel text")?.textContent?.trim() ?? "Section";
-      const src = el.querySelector("content")?.getAttribute("src") ?? "";
-      const href = src ? opfDir + src.split("#")[0] : "";
-      const children = walk(Array.from(el.querySelectorAll(":scope > navPoint")));
-      return { id: `toc-${n++}`, label, href, children };
-    });
-  }
-  return walk(Array.from(doc.querySelectorAll("navMap > navPoint")));
-}
-
-function parseNav(xml: string, opfDir: string): EpubTocItem[] {
-  const doc = new DOMParser().parseFromString(xml, "text/html");
-  // EPUB3 nav may use epub:type or a namespaced attribute
-  const nav =
-    doc.querySelector('nav[epub\\:type="toc"]') ??
-    doc.querySelector("nav[*|type='toc']") ??
-    doc.querySelector("nav");
-  if (!nav) return [];
-  let n = 0;
-  function walkOl(ol: Element): EpubTocItem[] {
-    return Array.from(ol.querySelectorAll(":scope > li")).map((li) => {
-      const a = li.querySelector(":scope > a");
-      const label = a?.textContent?.trim() ?? "Section";
-      const rawHref = a?.getAttribute("href") ?? "";
-      const href = rawHref ? opfDir + rawHref.split("#")[0] : "";
-      const childOl = li.querySelector(":scope > ol");
-      return { id: `toc-${n++}`, label, href, children: childOl ? walkOl(childOl) : [] };
-    });
-  }
-  const ol = nav.querySelector("ol");
-  return ol ? walkOl(ol) : [];
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Asset inlining
-// ─────────────────────────────────────────────────────────────────────────────
-
-const MIME_EXT: Record<string, string> = {
-  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
-  svg: "image/svg+xml", webp: "image/webp",
-  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf",
-};
-
-async function toDataUri(zip: JSZip, path: string): Promise<string | null> {
-  const entry = zip.file(path);
-  if (!entry) return null;
-  const b64 = await entry.async("base64");
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  const mime = MIME_EXT[ext] ?? "application/octet-stream";
-  return `data:${mime};base64,${b64}`;
-}
-
-/** Replace url(...) tokens in CSS with inline data URIs */
-async function inlineCssUrls(css: string, cssDir: string, zip: JSZip): Promise<string> {
-  const pattern = /url\(\s*(['"]?)([^'")\s]+)\1\s*\)/g;
-  const jobs: Array<{ token: string; resolved: string }> = [];
-  let m: RegExpExecArray | null;
-
-  while ((m = pattern.exec(css)) !== null) {
-    const raw = m[2];
-    if (/^(data:|https?:|#)/.test(raw)) continue;
-    jobs.push({ token: m[0], resolved: resolvePath(cssDir, raw) });
-  }
-
-  for (const { token, resolved } of jobs) {
-    const uri = await toDataUri(zip, resolved);
-    if (uri) css = css.split(token).join(`url("${uri}")`);
-  }
-  return css;
-}
-
-async function fetchCss(zip: JSZip, cssPath: string): Promise<string> {
-  const entry = zip.file(cssPath);
-  if (!entry) return "";
-  const raw = await entry.async("string");
-  return inlineCssUrls(raw, getDir(cssPath), zip);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Chapter HTML processor
-// ─────────────────────────────────────────────────────────────────────────────
-
-function themeCSS(t: (typeof themes)[ThemeMode], fontSize: number) {
-  return `
-    html { font-size: ${fontSize}% !important; }
-    html, body {
-      background:   ${t.bg}   !important;
-      color:        ${t.fg}   !important;
-      font-family:  Georgia, "Times New Roman", serif !important;
-      line-height:  1.75     !important;
-      padding:      24px 48px !important;
-      margin:       0        !important;
-      max-width:    800px    !important;
-      margin-left:  auto     !important;
-      margin-right: auto     !important;
-    }
-    h1,h2,h3,h4,h5,h6,p,div,span,li,td,th,blockquote { color: ${t.fg} !important; }
-    a { color: ${t.link} !important; }
-    img { max-width: 100% !important; height: auto !important; }
-  `;
-}
-
-async function processChapter(
-  zip: JSZip,
-  href: string,
-  theme: ThemeMode,
-  fontSize: number,
-): Promise<string> {
-  const entry = zip.file(href);
-  if (!entry) throw new Error(`Spine item not found in ZIP: ${href}`);
-
-  const raw = await entry.async("string");
-  const dir = getDir(href);
-  const doc = new DOMParser().parseFromString(raw, "text/html");
-
-  // 1. Inline <link rel="stylesheet">
-  for (const link of Array.from(doc.querySelectorAll<HTMLElement>('link[rel="stylesheet"]'))) {
-    const lhref = link.getAttribute("href") ?? "";
-    if (!lhref || /^https?:/.test(lhref)) continue;
-    const css = await fetchCss(zip, resolvePath(dir, lhref));
-    const style = doc.createElement("style");
-    style.textContent = css;
-    link.replaceWith(style);
-  }
-
-  // 2. Inline url() inside existing <style> blocks
-  for (const style of Array.from(doc.querySelectorAll("style"))) {
-    style.textContent = await inlineCssUrls(style.textContent ?? "", dir, zip);
-  }
-
-  // 3. Rewrite <img src> to data URIs
-  for (const img of Array.from(doc.querySelectorAll<HTMLImageElement>("img[src]"))) {
-    const src = img.getAttribute("src") ?? "";
-    if (/^(data:|https?:)/.test(src)) continue;
-    const uri = await toDataUri(zip, resolvePath(dir, src));
-    if (uri) img.setAttribute("src", uri);
-  }
-
-  // 4. Remove scripts (sandboxed iframe blocks them anyway; avoid errors)
-  doc.querySelectorAll("script").forEach((s) => s.remove());
-
-  // 5. Remove viewport meta so our CSS controls sizing
-  doc.querySelectorAll('meta[name="viewport"]').forEach((m) => m.remove());
-
-  // 6. Inject theme CSS last so it wins over book styles
-  const override = doc.createElement("style");
-  override.textContent = themeCSS(themes[theme], fontSize);
-  doc.head.appendChild(override);
-
-  return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Top-level EPUB loader
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function loadEpub(data: ArrayBuffer): Promise<ParsedEpub> {
-  const zip = await JSZip.loadAsync(data);
-
-  const containerEntry = zip.file("META-INF/container.xml");
-  if (!containerEntry) throw new Error("Not a valid EPUB: META-INF/container.xml is missing");
-
-  const opfPath = parseContainerXml(await containerEntry.async("string"));
-  const opfDir = getDir(opfPath);
-  const opfEntry = zip.file(opfPath);
-  if (!opfEntry) throw new Error(`OPF not found: ${opfPath}`);
-
-  const { manifest, spine } = parseOpf(await opfEntry.async("string"), opfDir);
-  if (spine.length === 0) throw new Error("EPUB spine is empty — nothing to display");
-
-  // TOC: EPUB3 NAV preferred, then EPUB2 NCX
-  let toc: EpubTocItem[] = [];
-  const navItem = Object.values(manifest).find(
-    (m) => m.mediaType === "application/xhtml+xml" && /nav/i.test(m.href),
-  );
-  const ncxItem = Object.values(manifest).find(
-    (m) => m.mediaType === "application/x-dtbncx+xml",
-  );
-  const tocEntry = (navItem ?? ncxItem) ? zip.file((navItem ?? ncxItem)!.href) : null;
-  if (tocEntry) {
-    const xml = await tocEntry.async("string");
-    toc = ncxItem && !navItem
-      ? parseNcx(xml, opfDir)
-      : parseNav(xml, opfDir);
-  }
-
-  return { zip, spine, toc };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Flatten TOC for active-id matching
-// ─────────────────────────────────────────────────────────────────────────────
+// Flatten TOC for search/indicators
 function flatToc(items: EpubTocItem[]): EpubTocItem[] {
   return items.flatMap((i) => [i, ...flatToc(i.children ?? [])]);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Component
-// ─────────────────────────────────────────────────────────────────────────────
-
 export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const { settings: appSettings } = useAppSettings();
+  const history = useAnnotationHistory(file.id);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const epubRef = useRef<ParsedEpub | null>(null);
   const isInitialLoad = useRef(true);
+  const epubTexts = useRef<{ index: number; text: string }[]>([]);
 
-  const [fontSize, setFontSize] = useState(100);
-  const [theme, setTheme] = useState<ThemeMode>("dark");
-  const [showToc, setShowToc] = useState(false);
-  const [spineIndex, setSpineIndex] = useState(0);
+  const { search: runWorkerSearch, results: workerResults, isSearching } = useSearchWorker();
+  const {
+    currentPage: chapterPage,
+    totalPages: chapterTotal,
+    nextPage: nextChapterPage,
+    prevPage: prevChapterPage,
+    applyPagination,
+    removePagination,
+    recalculate,
+  } = useEpubPagination();
+
+  const {
+    page: spineIndex, setPage: setSpineIndex,
+    totalPages: total, setTotalPages: setTotal,
+    settings, setSettings,
+    sidebarTab, setSidebarTab,
+    showSearch, setShowSearch,
+    searchQuery, setSearchQuery,
+    searchResults, setSearchResults,
+    currentResultIdx, setCurrentResultIdx,
+    hasUnsavedChanges, setHasUnsavedChanges,
+    navHistory, navIndex, pushNavHistory, setNavIndex,
+    reset: resetStore
+  } = useEpubStore();
+
+  useEffect(() => {
+    setSearchResults(workerResults.map((result) => ({
+      spineIndex: result.page,
+      matchIndex: result.index,
+    })));
+    if (workerResults.length > 0) setCurrentResultIdx(1);
+  }, [workerResults, setSearchResults, setCurrentResultIdx]);
+
+  const { loadEpub, processChapter, parsedEpub, themes } = useEpubEngine();
+
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toc, setToc] = useState<EpubTocItem[]>([]);
   const [activeTocId, setActiveTocId] = useState<string | null>(null);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [chapterLoading, setChapterLoading] = useState(false);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
-
+  const [showExportDialog, setShowExportDialog] = useState(false);
   const [dictionaryQuery, setDictionaryQuery] = useState<{ word: string, x: number, y: number, results: string[] } | null>(null);
   const [selectionMenu, setSelectionMenu] = useState<{ x: number, y: number, text: string } | null>(null);
+  const [highlights, setHighlights] = useState<Highlight[]>([]);
+  const [highlightColor, setHighlightColor] = useState("rgb(255,235,59)");
+  const [searchBarSeed, setSearchBarSeed] = useState("");
+
+  const isNavJump = useRef(false);
 
   const handleDefine = useCallback(async (word: string, x: number, y: number) => {
     const results = await lookupWord(word); 
@@ -350,72 +103,228 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     setSelectionMenu(null);
   }, []);
 
-  // ── Iframe Selection Bridge ──────────────────────────────────────────
+  const reloadHighlights = useCallback(async () => {
+    setHighlights(await getHighlights(file.id));
+  }, [file.id]);
+
+  useEffect(() => { reloadHighlights(); }, [reloadHighlights, history.annotationVersion]);
+
+  const applyHighlightsToIframe = useCallback(() => {
+    const frame = iframeRef.current;
+    if (!frame) return;
+    const doc = frame.contentDocument;
+    if (!doc?.body) return;
+    const chapterHighlights = highlights.filter(h => h.page === spineIndex);
+    if (chapterHighlights.length === 0) return;
+
+    for (const hl of chapterHighlights) {
+      if (hl.cfi) {
+        const range = resolveCfi(hl.cfi, doc);
+        if (range) {
+          try {
+            const mark = doc.createElement("mark");
+            mark.style.backgroundColor = hl.color;
+            mark.style.opacity = "0.4";
+            mark.style.borderRadius = "2px";
+            mark.style.padding = "0 1px";
+            range.surroundContents(mark);
+          } catch (e) { console.error("CFI Highlight apply failed:", e); }
+        }
+      } else if (hl.charOffset !== undefined && hl.charLength !== undefined) {
+        // Fallback for old highlights without CFI
+        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+        const textNodes: Text[] = [];
+        let n: Node | null;
+        while ((n = walker.nextNode())) textNodes.push(n as Text);
+        let offset = 0;
+        for (const tn of textNodes) {
+          const len = tn.textContent?.length || 0;
+          if (hl.charOffset! >= offset && hl.charOffset! < offset + len) {
+            try {
+              const startInNode = hl.charOffset! - offset;
+              const endInNode = Math.min(startInNode + hl.charLength!, len);
+              const range = doc.createRange();
+              range.setStart(tn, startInNode);
+              range.setEnd(tn, endInNode);
+              const mark = doc.createElement("mark");
+              mark.style.backgroundColor = hl.color;
+              mark.style.opacity = "0.4";
+              mark.style.borderRadius = "2px";
+              mark.style.padding = "0 1px";
+              range.surroundContents(mark);
+            } catch { /* skip */ }
+            break;
+          }
+          offset += len;
+        }
+      }
+    }
+  }, [highlights, spineIndex]);
+
+  const applySearchHighlightsToIframe = useCallback(() => {
+    const frame = iframeRef.current;
+    if (!frame) return;
+    const doc = frame.contentDocument;
+    if (!doc?.body) return;
+
+    const oldMarks = doc.querySelectorAll('mark.search-match');
+    oldMarks.forEach(mark => {
+      const parent = mark.parentNode;
+      if (parent) {
+        while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+        parent.removeChild(mark);
+      }
+    });
+
+    if (!searchQuery.trim()) return;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let n: Node | null;
+    while ((n = walker.nextNode())) textNodes.push(n as Text);
+    const lq = searchQuery.toLowerCase();
+    for (const tn of textNodes) {
+      const text = tn.textContent || "";
+      const ltext = text.toLowerCase();
+      const pos = ltext.indexOf(lq);
+      if (pos !== -1) {
+        try {
+          const range = doc.createRange();
+          range.setStart(tn, pos);
+          range.setEnd(tn, pos + lq.length);
+          const mark = doc.createElement("mark");
+          mark.className = "search-match";
+          mark.style.backgroundColor = "rgba(250, 204, 21, 0.5)";
+          mark.style.border = "1px solid rgba(234, 179, 8, 0.6)";
+          mark.style.borderRadius = "2px";
+          range.surroundContents(mark);
+        } catch { /* skip */ }
+      }
+    }
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (ready) applySearchHighlightsToIframe();
+  }, [searchQuery, spineIndex, ready, applySearchHighlightsToIframe]);
+
+  const getCharOffsetFromSelection = useCallback((): { charOffset: number; charLength: number } | null => {
+    const frame = iframeRef.current;
+    if (!frame) return null;
+    const doc = frame.contentDocument;
+    const selection = frame.contentWindow?.getSelection();
+    if (!doc?.body || !selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const text = selection.toString();
+    if (!text) return null;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    let charOffset = 0;
+    let n: Node | null;
+    while ((n = walker.nextNode())) {
+      if (n === range.startContainer) { charOffset += range.startOffset; break; }
+      charOffset += (n as Text).textContent?.length || 0;
+    }
+    return { charOffset, charLength: text.length };
+  }, []);
+
+  const handleHighlightSelection = useCallback(async () => {
+    if (!selectionMenu) return;
+    const frame = iframeRef.current;
+    const selection = frame?.contentWindow?.getSelection();
+    if (!selection || selection.rangeCount === 0) return;
+    
+    const range = selection.getRangeAt(0);
+    const cfi = generateCfi(range, spineIndex);
+    const pos = getCharOffsetFromSelection(); // Keep for legacy compat
+    
+    await history.doAddHighlight(
+      spineIndex, 
+      highlightColor, 
+      selectionMenu.text, 
+      [], 
+      pos?.charOffset, 
+      pos?.charLength,
+      cfi
+    );
+    toast.success("Text highlighted");
+    setHasUnsavedChanges(true);
+    setSelectionMenu(null);
+    setTimeout(applyHighlightsToIframe, 100);
+  }, [selectionMenu, getCharOffsetFromSelection, history, spineIndex, highlightColor, applyHighlightsToIframe, setHasUnsavedChanges]);
+
+  const handleBookmarkChapter = useCallback(async () => {
+    await history.doAddBookmark(spineIndex + 1, `Chapter ${spineIndex + 1}`);
+    toast.success(`Bookmarked chapter ${spineIndex + 1}`);
+    setHasUnsavedChanges(true);
+    setSelectionMenu(null);
+  }, [history, spineIndex, setHasUnsavedChanges]);
+
+  const handleCopySelection = useCallback(() => {
+    if (!selectionMenu) return;
+    navigator.clipboard.writeText(selectionMenu.text);
+    toast.success("Copied to clipboard");
+    setSelectionMenu(null);
+  }, [selectionMenu]);
+
+  const handleSearchFromSelection = useCallback(() => {
+    if (!selectionMenu) return;
+    setSearchBarSeed(selectionMenu.text);
+    setShowSearch(true);
+    setSelectionMenu(null);
+  }, [selectionMenu, setShowSearch]);
+
   useEffect(() => {
     const frame = iframeRef.current;
     if (!frame || !ready) return;
-
     const onMouseUp = () => {
       const win = frame.contentWindow;
       const selection = win?.getSelection();
       const text = selection?.toString().trim();
-      
-      if (!text || text.length > 50) {
-        setSelectionMenu(null);
-        return;
-      }
-
+      if (!text || text.length > 200) { setSelectionMenu(null); return; }
       const range = selection!.getRangeAt(0);
       const rect = range.getBoundingClientRect();
       const frameRect = frame.getBoundingClientRect();
-
-      setSelectionMenu({
-        x: rect.left + rect.width / 2 + frameRect.left,
-        y: rect.top + frameRect.top,
-        text,
-      });
+      setSelectionMenu({ x: rect.left + rect.width / 2 + frameRect.left, y: rect.top + frameRect.top, text });
     };
-
     const onMouseDown = () => {
       if (dictionaryQuery) setDictionaryQuery(null);
       setSelectionMenu(null);
     };
-
-    const setupListeners = () => {
+    const onLoad = () => {
       const doc = frame.contentDocument;
       if (!doc) return;
       doc.addEventListener("mouseup", onMouseUp);
       doc.addEventListener("mousedown", onMouseDown);
+      applyHighlightsToIframe();
+      applySearchHighlightsToIframe();
     };
-
-    frame.addEventListener("load", setupListeners);
-    setupListeners();
-
+    frame.addEventListener("load", onLoad);
+    if (frame.contentDocument) {
+      frame.contentDocument.addEventListener("mouseup", onMouseUp);
+      frame.contentDocument.addEventListener("mousedown", onMouseDown);
+      applyHighlightsToIframe();
+      applySearchHighlightsToIframe();
+    }
     return () => {
+      frame.removeEventListener("load", onLoad);
       const doc = frame.contentDocument;
       if (doc) {
         doc.removeEventListener("mouseup", onMouseUp);
         doc.removeEventListener("mousedown", onMouseDown);
       }
     };
-  }, [ready, spineIndex, dictionaryQuery]);
+  }, [ready, spineIndex, dictionaryQuery, applyHighlightsToIframe, applySearchHighlightsToIframe]);
 
-
-  // ── Parse EPUB once ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!file.data) return;
     let cancelled = false;
-
     setReady(false);
     setError(null);
-    epubRef.current = null;
     isInitialLoad.current = true;
 
     loadEpub(file.data)
       .then((parsed) => {
         if (cancelled) return;
-        epubRef.current = parsed;
         setToc(parsed.toc);
+        setTotal(parsed.spine.length);
         const saved = localStorage.getItem(`epub-progress-${file.id}`);
         const idx = saved ? parseInt(saved, 10) : 0;
         setSpineIndex(!isNaN(idx) && idx < parsed.spine.length ? idx : 0);
@@ -427,29 +336,48 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           setError(err instanceof Error ? err.message : "Could not open this EPUB file.");
         }
       });
-
     return () => { cancelled = true; };
-  }, [file.id, file.data]);
+  }, [file.id, file.data, loadEpub, setTotal, setSpineIndex]);
 
-  // ── Render chapter on index / theme / fontSize change ────────────────────
   useEffect(() => {
-    const epub = epubRef.current;
-    if (!ready || !epub) return;
+    if (!parsedEpub) {
+      epubTexts.current = [];
+      return;
+    }
+    const extract = async () => {
+      const texts: { index: number; text: string }[] = [];
+      for (let i = 0; i < parsedEpub.spine.length; i++) {
+        const entry = parsedEpub.zip.file(parsedEpub.spine[i].href);
+        if (!entry) continue;
+        const html = await entry.async("string");
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const text = doc.body.textContent || "";
+        texts.push({ index: i, text });
+      }
+      epubTexts.current = texts;
+    };
+    extract();
+  }, [parsedEpub]);
 
-    const item = epub.spine[spineIndex];
+  useEffect(() => {
+    if (!ready || !parsedEpub) return;
+    const item = parsedEpub.spine[spineIndex];
     if (!item) return;
-
     let cancelled = false;
     setChapterLoading(true);
 
-    processChapter(epub.zip, item.href, theme, fontSize)
+    processChapter(item.href, settings.theme, settings.fontSize)
       .then((html) => {
         if (cancelled || !iframeRef.current) return;
         iframeRef.current.srcdoc = html;
         setChapterLoading(false);
-        // Sync active TOC item
-        const match = flatToc(epub.toc).find((t) => t.href === item.href);
+        const match = flatToc(parsedEpub.toc).find((t) => t.href === item.href);
         setActiveTocId(match?.id ?? null);
+
+        // Apply pagination if enabled
+        if (settings.paginationMode && iframeRef.current) {
+          applyPagination(iframeRef.current, iframeRef.current.clientWidth, iframeRef.current.clientHeight);
+        }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -457,81 +385,129 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           setChapterLoading(false);
         }
       });
-
     return () => { cancelled = true; };
-  }, [ready, spineIndex, theme, fontSize]);
+  }, [ready, spineIndex, settings.theme, settings.fontSize, parsedEpub, processChapter, settings.paginationMode, applyPagination]);
 
-  // ── Mark unsaved on spine/chapter change ────────────────────────────────
+  // Handle pagination mode toggle
+  useEffect(() => {
+    if (!ready || !iframeRef.current) return;
+    if (settings.paginationMode) {
+      applyPagination(iframeRef.current, iframeRef.current.clientWidth, iframeRef.current.clientHeight);
+    } else {
+      removePagination(iframeRef.current);
+    }
+  }, [settings.paginationMode, ready, applyPagination, removePagination]);
+
+  // Recalculate on resize
+  useEffect(() => {
+    const handleResize = () => {
+      if (settings.paginationMode && iframeRef.current) {
+        recalculate(iframeRef.current, iframeRef.current.clientWidth);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [settings.paginationMode, recalculate]);
+
   useEffect(() => {
     if (ready) {
-      if (isInitialLoad.current) {
-        isInitialLoad.current = false;
-        return;
-      }
-
-      // Auto-update progress percentage
-      const total = epubRef.current?.spine.length ?? 1;
+      if (isInitialLoad.current) { isInitialLoad.current = false; return; }
       const percentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
       updateProgress(file.id, percentage).catch(console.error);
     }
-
-    // Ensure final progress is saved on unmount/exit
     return () => {
-      if (ready && epubRef.current) {
-        const total = epubRef.current.spine.length ?? 1;
-        const finalPercentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
+      if (ready && total > 1) {
+        const finalPercentage = Math.round((spineIndex / (total - 1)) * 100);
         updateProgress(file.id, finalPercentage).catch(console.error);
       }
     };
-  }, [spineIndex, ready, file.id]);
+  }, [spineIndex, ready, file.id, total]);
 
-  // ── Save progress ─────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
-    const total = epubRef.current?.spine.length ?? 1;
     const percentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
     await updateProgress(file.id, percentage);
     localStorage.setItem(`epub-progress-${file.id}`, String(spineIndex));
     setHasUnsavedChanges(false);
     toast.success("Reading progress saved");
-  }, [spineIndex, file.id]);
+  }, [spineIndex, file.id, total, setHasUnsavedChanges]);
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-  const total = epubRef.current?.spine.length ?? 1;
-  const atStart = spineIndex === 0;
-  const atEnd = spineIndex >= total - 1;
+  const navigateToChapter = useCallback((idx: number) => {
+    const clamped = Math.max(0, Math.min(total - 1, idx));
+    if (!isNavJump.current && clamped !== spineIndex) {
+      pushNavHistory(String(clamped));
+    }
+    isNavJump.current = false;
+    setSpineIndex(clamped);
+  }, [spineIndex, total, pushNavHistory, setSpineIndex]);
 
-  const goNext = useCallback(() => setSpineIndex((i) => Math.min((epubRef.current?.spine.length ?? 1) - 1, i + 1)), []);
-  const goPrev = useCallback(() => setSpineIndex((i) => Math.max(0, i - 1)), []);
+  const goNext = useCallback(() => {
+    if (settings.paginationMode) {
+      if (nextChapterPage()) return;
+    }
+    navigateToChapter(spineIndex + 1);
+  }, [navigateToChapter, spineIndex, settings.paginationMode, nextChapterPage]);
 
-  // ── TOC selection ─────────────────────────────────────────────────────────
+  const goPrev = useCallback(() => {
+    if (settings.paginationMode) {
+      if (prevChapterPage()) return;
+    }
+    navigateToChapter(spineIndex - 1);
+  }, [navigateToChapter, spineIndex, settings.paginationMode, prevChapterPage]);
+
+  const handleSearch = useCallback((query: string) => {
+    setSearchQuery(query);
+    if (!query.trim() || !parsedEpub) {
+      setSearchResults([]);
+      setCurrentResultIdx(0);
+      return;
+    }
+    runWorkerSearch(query, epubTexts.current);
+  }, [parsedEpub, runWorkerSearch, setSearchQuery, setSearchResults, setCurrentResultIdx]);
+
+  const handleNextResult = useCallback(() => {
+    if (searchResults.length === 0) return;
+    const next = currentResultIdx >= searchResults.length ? 1 : currentResultIdx + 1;
+    setCurrentResultIdx(next);
+    navigateToChapter(searchResults[next - 1].spineIndex);
+  }, [searchResults, currentResultIdx, navigateToChapter, setCurrentResultIdx]);
+
+  const handlePrevResult = useCallback(() => {
+    if (searchResults.length === 0) return;
+    const prev = currentResultIdx <= 1 ? searchResults.length : currentResultIdx - 1;
+    setCurrentResultIdx(prev);
+    navigateToChapter(searchResults[prev - 1].spineIndex);
+  }, [searchResults, currentResultIdx, navigateToChapter, setCurrentResultIdx]);
+
   const handleTocSelect = useCallback((item: TocItem) => {
-    const epub = epubRef.current;
     const ti = item as EpubTocItem;
-    if (!epub || !ti.href) return;
-    const idx = epub.spine.findIndex((s) => s.href === ti.href);
-    if (idx >= 0) setSpineIndex(idx);
-    if (window.innerWidth < 768) setShowToc(false);
-  }, []);
+    if (!parsedEpub || !ti.href) return;
+    const idx = parsedEpub.spine.findIndex((s) => s.href === ti.href);
+    if (idx >= 0) navigateToChapter(idx);
+    if (window.innerWidth < 768) setSidebarTab(null);
+  }, [navigateToChapter, parsedEpub, setSidebarTab]);
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const isEditable = tag === "INPUT" || tag === "TEXTAREA";
+      if (isEditable && e.key !== "Escape" && !(e.ctrlKey || e.metaKey)) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key === "f") { e.preventDefault(); setShowSearch(true); return; }
+      if (e.key === "Escape" && showSearch) { setShowSearch(false); setSearchResults([]); setCurrentResultIdx(0); setSearchQuery(""); return; }
+      if (ctrl && e.key === "s") { e.preventDefault(); handleSave(); return; }
+      if (ctrl && e.key === "b") { e.preventDefault(); setSidebarTab(sidebarTab ? null : "toc"); return; }
+      if (ctrl && e.key === ",") { e.preventDefault(); setSidebarTab("bookmarks"); return; }
+      if (e.shiftKey && e.key === "H") { handleHighlightSelection(); return; }
       if (e.key === "ArrowRight" || e.key === "PageDown") goNext();
-      if (e.key === "ArrowLeft" || e.key === "PageUp") goPrev();
-      if (e.key === " ") { e.preventDefault(); goNext(); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); handleSave(); }
+      else if (e.key === "ArrowLeft" || e.key === "PageUp") goPrev();
+      else if (e.key === " ") { e.preventDefault(); goNext(); }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [goNext, goPrev, handleSave]);
+  }, [goNext, goPrev, handleSave, showSearch, handleHighlightSelection, sidebarTab, setShowSearch, setSearchQuery, setSearchResults, setCurrentResultIdx, setSidebarTab]);
 
-  // ── Before-unload guard ───────────────────────────────────────────────────
   useEffect(() => {
-    const fn = (e: BeforeUnloadEvent) => {
-      if (hasUnsavedChanges) { e.preventDefault(); e.returnValue = ""; }
-    };
+    const fn = (e: BeforeUnloadEvent) => { if (hasUnsavedChanges) { e.preventDefault(); e.returnValue = ""; } };
     window.addEventListener("beforeunload", fn);
     return () => window.removeEventListener("beforeunload", fn);
   }, [hasUnsavedChanges]);
@@ -541,119 +517,224 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     else onBack();
   }, [hasUnsavedChanges, onBack]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Render
-  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen flex-col bg-background" style={{ color: themes[theme].fg }}>
-
-      {/* ── Toolbar ── */}
+    <div className="flex h-screen flex-col bg-background">
       <ViewerToolbar title={file.name} onBack={handleBackWithCheck}>
         <Button
-          variant="ghost" size="icon"
-          aria-label="Toggle contents"
-          onClick={() => setShowToc((o) => !o)}
-          className={showToc ? "bg-secondary" : ""}
+          variant={sidebarTab === "toc" ? "secondary" : "ghost"} size="icon"
+          onClick={() => setSidebarTab(sidebarTab === "toc" ? null : "toc")}
         >
           <ListTree className="h-4 w-4" />
         </Button>
-
-
-
+        <Button
+          variant={sidebarTab === "bookmarks" ? "secondary" : "ghost"} size="icon"
+          onClick={() => setSidebarTab(sidebarTab === "bookmarks" ? null : "bookmarks")}
+          title="Bookmarks (Ctrl + ,)"
+        >
+          <BookmarkIcon className="h-4 w-4" />
+        </Button>
+        <Button
+          variant={sidebarTab === "highlights" ? "secondary" : "ghost"} size="icon"
+          onClick={() => setSidebarTab(sidebarTab === "highlights" ? null : "highlights")}
+          title="Highlights"
+        >
+          <Highlighter className="h-4 w-4" />
+        </Button>
+        <div className="w-px h-5 bg-border mx-1" />
+        <Button
+          variant={settings.paginationMode ? "secondary" : "ghost"} size="icon"
+          onClick={() => setSettings(s => ({ ...s, paginationMode: !s.paginationMode }))}
+          title={settings.paginationMode ? "Switch to Scroll Mode" : "Switch to Page Mode"}
+        >
+          {settings.paginationMode ? <ScrollText className="h-4 w-4" /> : <Columns className="h-4 w-4" />}
+        </Button>
+        <div className="w-px h-5 bg-border mx-1" />
+        <Button
+          type="button" variant="ghost" size="icon" className="h-8 w-8"
+          onClick={() => setShowSearch(!showSearch)}
+          title="Find (Ctrl+F)"
+        >
+          <Search className="h-4 w-4" />
+        </Button>
         <div className="flex-1" />
-
-        {/* Font size */}
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon" className="h-8 w-8"
-            onClick={() => setFontSize((s) => Math.max(60, s - 10))}>
+            onClick={() => setSettings(s => ({ ...s, fontSize: Math.max(60, s.fontSize - 10) }))}>
             <Minus className="h-3 w-3" />
           </Button>
-          <span className="text-[10px] font-mono w-8 text-center">{fontSize}%</span>
+          <span className="text-[10px] font-mono w-8 text-center">{settings.fontSize}%</span>
           <Button variant="ghost" size="icon" className="h-8 w-8"
-            onClick={() => setFontSize((s) => Math.min(200, s + 10))}>
+            onClick={() => setSettings(s => ({ ...s, fontSize: Math.min(200, s.fontSize + 10) }))}>
             <Plus className="h-3 w-3" />
           </Button>
         </div>
-
-        {/* Theme swatches */}
         <div className="flex items-center gap-1 ml-2">
-          {(Object.entries(themes) as [ThemeMode, (typeof themes)[ThemeMode]][])
-            .slice(0, 6)
-            .map(([key, t]) => (
-              <button
-                key={key}
-                onClick={() => setTheme(key)}
-                className={`w-5 h-5 rounded-full border-2 transition-all ${theme === key
-                  ? "border-primary scale-110 shadow-sm"
-                  : "border-transparent hover:scale-105"
-                  }`}
-                style={{ backgroundColor: t.bg }}
-                title={t.label}
-              />
-            ))}
+          {(Object.entries(themes) as Array<[keyof typeof themes, (typeof themes)[keyof typeof themes]]>).map(([key, t]) => (
+            <button
+              key={key}
+              onClick={() => setSettings(s => ({ ...s, theme: key }))}
+              className={`w-5 h-5 rounded-full border-2 transition-all ${settings.theme === key
+                ? "border-primary scale-110 shadow-sm"
+                : "border-transparent hover:scale-105"
+                }`}
+              style={{ backgroundColor: t.bg }}
+              title={t.label}
+            />
+          ))}
         </div>
+        <div className="w-px h-5 bg-border mx-1" />
+        <Button
+          variant="ghost" size="icon" className="h-8 w-8"
+          onClick={() => setShowExportDialog(true)}
+          title="Export Annotations"
+        >
+          <Download className="h-4 w-4" />
+        </Button>
       </ViewerToolbar>
 
-      {/* ── Main area ── */}
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
-        <DocumentTocSidebar
-          title="Book contents"
-          items={toc}
-          isOpen={showToc}
-          activeId={activeTocId}
-          onClose={() => setShowToc(false)}
-          onSelect={handleTocSelect}
-        />
+        {sidebarTab === "toc" && (
+          <DocumentTocSidebar
+            title="Book contents"
+            items={toc}
+            isOpen={true}
+            activeId={activeTocId}
+            onClose={() => setSidebarTab(null)}
+            onSelect={handleTocSelect}
+          />
+        )}
+        {sidebarTab === "bookmarks" && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-56 max-w-[85vw] flex-col border-r border-border glass-surface md:relative md:max-w-none md:shrink-0">
+            <BookmarkPanel
+              fileId={file.id}
+              currentPage={spineIndex + 1}
+              onPageSelect={(p) => navigateToChapter(p - 1)}
+              version={history.annotationVersion}
+              pageLabel="ch."
+              onAdd={(pg, label) => history.doAddBookmark(pg, label).then(() => { setHasUnsavedChanges(true); })}
+              onRemove={(id, bm) => history.doRemoveBookmark(id, bm).then(() => { setHasUnsavedChanges(true); })}
+            />
+          </aside>
+        )}
+        {sidebarTab === "highlights" && (
+          <aside className="absolute inset-y-0 left-0 z-30 flex w-56 max-w-[85vw] flex-col border-r border-border glass-surface md:relative md:max-w-none md:shrink-0">
+            <HighlightPanel
+              fileId={file.id}
+              currentPage={spineIndex}
+              onPageSelect={(p) => navigateToChapter(p)}
+              activeColor={highlightColor}
+              onColorChange={setHighlightColor}
+              version={history.annotationVersion}
+              pageLabel="ch."
+              onRemoveHighlight={(id, hl) => history.doRemoveHighlight(id, hl).then(() => { setHasUnsavedChanges(true); })}
+            />
+          </aside>
+        )}
 
-        {/* Chapter viewport */}
-        <div
-          className="relative flex-1 min-h-0 overflow-hidden"
-          style={{ background: themes[theme].bg }}
-        >
-          {/* iframe is always mounted once ready so srcdoc updates are smooth */}
+        <div className="relative flex-1 min-h-0 overflow-hidden" style={{ background: themes[settings.theme].bg }}>
           <iframe
             ref={iframeRef}
-            className="w-full h-full border-0"
-            style={{ display: ready ? "block" : "none" }}
+            className="w-full h-full border-0 transition-opacity duration-300"
+            style={{ display: ready ? "block" : "none", opacity: chapterLoading ? 0.3 : 1 }}
             sandbox="allow-same-origin"
             title="Book content"
           />
 
-          {/* Loading overlay: only show on initial load. Chapter switches 
-              will be nearly instant due to srcdoc, avoiding jarring flickers. */}
+          {/* Chapter-switch shimmer overlay */}
+          {chapterLoading && ready && (
+            <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
+              <div className="flex flex-col items-center gap-3">
+                <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+                <span className="text-xs text-muted-foreground font-mono">Loading chapter…</span>
+              </div>
+            </div>
+          )}
+
+          {/* Initial book-load state */}
           {!ready && !error && (
-            <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-10 pointer-events-none">
-              <p className="text-muted-foreground animate-pulse">
-                Opening book…
-              </p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/90 z-10 pointer-events-none">
+              <div className="relative">
+                <div className="h-14 w-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+                  <Book className="h-7 w-7 text-primary/60" />
+                </div>
+                <div className="absolute -inset-1 rounded-2xl border border-primary/20 animate-ping opacity-30" />
+              </div>
+              <div className="flex flex-col items-center gap-1">
+                <p className="text-sm font-medium text-foreground/80">Opening book…</p>
+                <p className="text-xs text-muted-foreground">Parsing EPUB structure</p>
+              </div>
             </div>
           )}
 
           {/* Error state */}
           {error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 z-10 px-8 text-center gap-3">
-              <p className="text-sm text-destructive font-medium">{error}</p>
-              <p className="text-xs text-muted-foreground">
-                The file must be a standard EPUB (ZIP-based, no DRM).
-              </p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 z-10 px-8 text-center gap-4">
+              <div className="h-12 w-12 rounded-2xl bg-destructive/10 border border-destructive/20 flex items-center justify-center">
+                <Book className="h-6 w-6 text-destructive/60" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <p className="text-sm text-destructive font-medium">{error}</p>
+                <p className="text-xs text-muted-foreground">File must be a standard EPUB (ZIP-based, no DRM).</p>
+              </div>
             </div>
           )}
+
+          {/* Floating prev/next nav arrows */}
+          {ready && !chapterLoading && (
+            <>
+              <button
+                onClick={goPrev}
+                disabled={spineIndex === 0 && !settings.paginationMode}
+                className="absolute left-2 top-1/2 -translate-y-1/2 z-20 h-10 w-10 rounded-full glass-surface border border-border/60 flex items-center justify-center text-foreground/50 hover:text-foreground hover:border-primary/40 hover:shadow-lg transition-all duration-200 disabled:opacity-20 disabled:cursor-not-allowed group"
+                title="Previous (←)"
+              >
+                <ChevronLeft className="h-5 w-5 transition-transform group-hover:-translate-x-0.5" />
+              </button>
+              <button
+                onClick={goNext}
+                disabled={spineIndex >= total - 1 && !settings.paginationMode}
+                className="absolute right-2 top-1/2 -translate-y-1/2 z-20 h-10 w-10 rounded-full glass-surface border border-border/60 flex items-center justify-center text-foreground/50 hover:text-foreground hover:border-primary/40 hover:shadow-lg transition-all duration-200 disabled:opacity-20 disabled:cursor-not-allowed group"
+                title="Next (→)"
+              >
+                <ChevronRight className="h-5 w-5 transition-transform group-hover:translate-x-0.5" />
+              </button>
+            </>
+          )}
+
+          {/* Floating status pill */}
+          <EpubStatusBar
+            progress={
+              settings.paginationMode
+                ? `Chapter ${spineIndex + 1} • Page ${chapterPage} of ${chapterTotal}`
+                : activeTocId
+                  ? flatToc(toc).find((t) => t.id === activeTocId)?.label
+                  : ready ? `Chapter ${spineIndex + 1} of ${total}` : "Reading…"
+            }
+            theme={themes[settings.theme].label}
+            fontSize={settings.fontSize}
+            hasUnsavedChanges={hasUnsavedChanges}
+          />
+
+          <PdfSearchBar
+            isOpen={showSearch}
+            onClose={() => {
+              setShowSearch(false);
+              setSearchBarSeed("");
+              setSearchResults([]);
+              setCurrentResultIdx(0);
+              setSearchQuery("");
+            }}
+            onSearch={handleSearch}
+            onNextResult={handleNextResult}
+            onPrevResult={handlePrevResult}
+            currentResult={currentResultIdx}
+            totalResults={searchResults.length}
+            seed={searchBarSeed}
+          />
         </div>
       </div>
 
-      {/* ── Status bar ── */}
-      <EpubStatusBar
-        progress={
-          activeTocId
-            ? flatToc(toc).find((t) => t.id === activeTocId)?.label
-            : ready
-              ? `Chapter ${spineIndex + 1} of ${total}`
-              : "Reading…"
-        }
-        theme={themes[theme].label}
-        fontSize={fontSize}
-        hasUnsavedChanges={hasUnsavedChanges}
-      />
+
 
       <UnsavedChangesDialog
         isOpen={showUnsavedDialog}
@@ -662,21 +743,30 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         onDiscard={() => { setHasUnsavedChanges(false); setShowUnsavedDialog(false); onBack(); }}
       />
 
-      {/* ── Selection Context Menu ── */}
       {selectionMenu && (
-        <div 
-          className="fixed z-50 flex items-center gap-0.5 rounded-lg glass-surface border border-border px-1.5 py-1 shadow-xl animate-in fade-in zoom-in duration-200"
-          style={{ 
-            left: selectionMenu.x, 
-            top: selectionMenu.y,
-            transform: "translate(-50%, -120%)"
-          }}
+        <div
+          className="fixed z-50 flex items-center rounded-xl glass-surface border border-border/70 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+          style={{ left: selectionMenu.x, top: selectionMenu.y, transform: "translate(-50%, calc(-100% - 10px))" }}
         >
-          <button 
-            onClick={() => handleDefine(selectionMenu.text, selectionMenu.x, selectionMenu.y)}
-            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold text-primary hover:bg-primary/10 transition-colors"
-          >
+          <button onClick={handleCopySelection} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
+            <Copy className="h-3 w-3" /> Copy
+          </button>
+          <span className="w-px h-4 bg-border/60 shrink-0" />
+          <button onClick={() => handleDefine(selectionMenu.text, selectionMenu.x, selectionMenu.y)} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
             <Book className="h-3 w-3" /> Define
+          </button>
+          <span className="w-px h-4 bg-border/60 shrink-0" />
+          <button onClick={handleHighlightSelection} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
+            <span className="w-3 h-3 rounded-sm border border-white/10" style={{ backgroundColor: highlightColor }} />
+            Highlight
+          </button>
+          <span className="w-px h-4 bg-border/60 shrink-0" />
+          <button onClick={handleSearchFromSelection} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
+            <Search className="h-3 w-3" /> Search
+          </button>
+          <span className="w-px h-4 bg-border/60 shrink-0" />
+          <button onClick={handleBookmarkChapter} className="flex items-center gap-1.5 px-3 py-2 text-xs text-primary/80 hover:text-primary hover:bg-primary/5 transition-colors">
+            <BookmarkIcon className="h-3 w-3" /> Bookmark
           </button>
         </div>
       )}
@@ -689,6 +779,13 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           onClose={() => setDictionaryQuery(null)}
         />
       )}
+
+      <ExportDialog
+        isOpen={showExportDialog}
+        onClose={() => setShowExportDialog(false)}
+        fileId={file.id}
+        fileName={file.name}
+      />
     </div>
   );
 }
