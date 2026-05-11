@@ -236,9 +236,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     if (workerResults.length > 0) setCurrentResultIdx(1);
   }, [workerResults, setSearchResults, setCurrentResultIdx]);
 
+  const [textsExtracted, setTextsExtracted] = useState(false);
+
   useEffect(() => {
     if (!pdf) {
       pdfTexts.current = [];
+      setTextsExtracted(false);
       return;
     }
     const extract = async () => {
@@ -250,9 +253,16 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         texts.push({ index: i, text });
       }
       pdfTexts.current = texts;
+      setTextsExtracted(true);
     };
     extract();
   }, [pdf]);
+
+  useEffect(() => {
+    if (textsExtracted && searchQuery.trim()) {
+      runWorkerSearch(searchQuery, pdfTexts.current);
+    }
+  }, [textsExtracted, searchQuery, runWorkerSearch]);
 
   const pageRef = useRef(page);
   const zoomBeforeFit = useRef<number | null>(null);
@@ -342,13 +352,27 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         if (cancelled) return;
         setPdf(doc);
         setTotalPages(doc.numPages);
-        setPage(1);
+        
+        if (file.progress && file.progress > 0) {
+          const restoredPage = Math.max(1, Math.round((file.progress / 100) * doc.numPages));
+          navigateToPage(restoredPage);
+        } else {
+          navigateToPage(1);
+        }
+
         const outline = await doc.getOutline();
         if (!cancelled) setTocItems(outline ? await mapPdfOutlineItems(doc, outline) : []);
       })
       .catch((error) => { if (!cancelled) console.error("Failed to load PDF", error); });
     return () => { cancelled = true; loadingTask.destroy(); };
-  }, [cancelAllRenders, file.data, setPage, setTotalPages]);
+  }, [cancelAllRenders, file.data, navigateToPage, setTotalPages, file.progress]);
+
+  /* Auto-save progress when page changes */
+  useEffect(() => {
+    if (!pdf || totalPages <= 1) return;
+    const percentage = Math.round((page / totalPages) * 100);
+    updateProgress(file.id, percentage).catch(console.error);
+  }, [page, totalPages, file.id, pdf]);
 
   /* Navigation history */
   const handleDefine = useCallback(async (word: string, x: number, y: number) => {
@@ -825,7 +849,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         pageEl.scrollIntoView({ behavior: "auto", block: "start" });
       }
     }
-    const timer = setTimeout(() => { isNavigating.current = false; }, 150);
+    const timer = setTimeout(() => { isNavigating.current = false; }, 500);
     return () => clearTimeout(timer);
   }, [page, displayMode]);
 

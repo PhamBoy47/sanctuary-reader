@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import JSZip from "jszip";
-import type { EpubThemeMode } from "@/store/useEpubStore";
+import type { EpubThemeMode } from "@/stores/useEpubStore";
 
 export interface ManifestItem {
   id: string;

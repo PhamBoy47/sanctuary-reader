@@ -26,7 +26,7 @@ import { getHighlights, type Highlight } from "@/lib/annotationStore";
 import { BookmarkPanel } from "@/components/BookmarkPanel";
 import { HighlightPanel } from "@/components/HighlightPanel";
 import { PdfSearchBar } from "@/components/PdfSearchBar";
-import { useEpubStore } from "@/store/useEpubStore";
+import { useEpubStore } from "@/stores/useEpubStore";
 import { useEpubEngine } from "@/hooks/useEpubEngine";
 import { useSearchWorker } from "@/hooks/useSearchWorker";
 import { useEpubPagination } from "@/hooks/useEpubPagination";
@@ -339,9 +339,12 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     return () => { cancelled = true; };
   }, [file.id, file.data, loadEpub, setTotal, setSpineIndex]);
 
+  const [textsExtracted, setTextsExtracted] = useState(false);
+
   useEffect(() => {
     if (!parsedEpub) {
       epubTexts.current = [];
+      setTextsExtracted(false);
       return;
     }
     const extract = async () => {
@@ -355,9 +358,16 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         texts.push({ index: i, text });
       }
       epubTexts.current = texts;
+      setTextsExtracted(true);
     };
     extract();
   }, [parsedEpub]);
+
+  useEffect(() => {
+    if (textsExtracted && searchQuery.trim()) {
+      runWorkerSearch(searchQuery, epubTexts.current);
+    }
+  }, [textsExtracted, searchQuery, runWorkerSearch]);
 
   useEffect(() => {
     if (!ready || !parsedEpub) return;

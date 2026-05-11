@@ -6,9 +6,6 @@
  */
 import * as pdfjsLib from "pdfjs-dist";
 
-// Initialize worker source (must match the main thread version)
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-
 let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null;
 
 self.onmessage = async (e: MessageEvent) => {
@@ -22,8 +19,8 @@ self.onmessage = async (e: MessageEvent) => {
     try {
       pdfDoc = await pdfjsLib.getDocument({ 
         data,
-        standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`,
-        cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+        standardFontDataUrl: "/pdfjs/standard_fonts/",
+        cMapUrl: "/pdfjs/cmaps/",
         cMapPacked: true,
       }).promise;
       self.postMessage({ type: "ready" });

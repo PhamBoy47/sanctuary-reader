@@ -1,169 +1,104 @@
-/**
- * Zustand store for EPUB viewer UI state.
- * Replaces scattered useState calls in EpubViewer.tsx.
- */
 import { create } from "zustand";
+import { EpubSettings } from "../types/epub";
 
-export type EpubSidebarTab = "toc" | "bookmarks" | "highlights" | null;
+// Canonical EPUB viewer store. Keep EPUB and PDF Zustand stores under src/stores.
 export type EpubThemeMode = "original" | "light" | "sepia" | "warm" | "cool" | "dark" | "midnight";
 
-interface EpubSearchResult {
+export interface EpubSearchResult {
   spineIndex: number;
   matchIndex: number;
 }
 
-interface EpubStoreState {
-  // Chapter navigation
-  spineIndex: number;
-  fontSize: number;
-  theme: EpubThemeMode;
+interface EpubState {
+  // Navigation
+  page: number;
+  totalPages: number;
+  cfi: string | null;
+  navHistory: string[];
+  navIndex: number;
 
-  // UI panels
-  sidebarTab: EpubSidebarTab;
-  showSearch: boolean;
-
-  // Document state
-  ready: boolean;
-  error: string | null;
-  hasUnsavedChanges: boolean;
-  chapterLoading: boolean;
-  showUnsavedDialog: boolean;
+  // View settings
+  settings: EpubSettings;
+  sidebarTab: "toc" | "bookmarks" | "highlights" | "settings" | null;
 
   // Search
+  showSearch: boolean;
   searchQuery: string;
-  searchBarSeed: string;
   searchResults: EpubSearchResult[];
   currentResultIdx: number;
 
-  // Annotations
-  highlightColor: string;
-
-  // Navigation history
-  navHistory: number[];
-  navIndex: number;
-
-  // Selection menu
-  selectionMenu: { x: number; y: number; text: string } | null;
-
-  // Dictionary
-  dictionaryQuery: { word: string; x: number; y: number; results: string[] } | null;
-
-  // Pagination mode
-  paginated: boolean;
-}
-
-interface EpubStoreActions {
-  setSpineIndex: (idx: number) => void;
-  setFontSize: (size: number | ((s: number) => number)) => void;
-  setTheme: (theme: EpubThemeMode) => void;
-
-  setSidebarTab: (tab: EpubSidebarTab | ((t: EpubSidebarTab) => EpubSidebarTab)) => void;
-  setShowSearch: (show: boolean | ((s: boolean) => boolean)) => void;
-
-  setReady: (ready: boolean) => void;
-  setError: (error: string | null) => void;
+  // UI State
   setHasUnsavedChanges: (value: boolean) => void;
-  setChapterLoading: (loading: boolean) => void;
-  setShowUnsavedDialog: (show: boolean) => void;
 
+  // Actions
+  setPage: (page: number) => void;
+  setTotalPages: (total: number) => void;
+  setCfi: (cfi: string | null) => void;
+  setSettings: (settings: EpubSettings | ((prev: EpubSettings) => EpubSettings)) => void;
+  setSidebarTab: (tab: "toc" | "bookmarks" | "highlights" | "settings" | null) => void;
+  setShowSearch: (show: boolean) => void;
   setSearchQuery: (query: string) => void;
-  setSearchBarSeed: (seed: string) => void;
   setSearchResults: (results: EpubSearchResult[]) => void;
-  setCurrentResultIdx: (idx: number | ((i: number) => number)) => void;
-  resetSearch: () => void;
-
-  setHighlightColor: (color: string) => void;
-
-  pushNavHistory: (idx: number) => void;
-  setNavIndex: (idx: number | ((i: number) => number)) => void;
-  setNavHistory: (history: number[] | ((h: number[]) => number[])) => void;
-
-  setSelectionMenu: (menu: { x: number; y: number; text: string } | null) => void;
-  setDictionaryQuery: (query: { word: string; x: number; y: number; results: string[] } | null) => void;
-
-  setPaginated: (value: boolean) => void;
-
+  setCurrentResultIdx: (idx: number) => void;
+  hasUnsavedChanges: boolean;
+  pushNavHistory: (cfi: string) => void;
+  setNavIndex: (idx: number) => void;
   reset: () => void;
 }
 
-const initialState: EpubStoreState = {
-  spineIndex: 0,
+const DEFAULT_SETTINGS: EpubSettings = {
   fontSize: 100,
-  theme: "dark",
-  sidebarTab: null,
-  showSearch: false,
-  ready: false,
-  error: null,
-  hasUnsavedChanges: false,
-  chapterLoading: false,
-  showUnsavedDialog: false,
-  searchQuery: "",
-  searchBarSeed: "",
-  searchResults: [],
-  currentResultIdx: 0,
-  highlightColor: "rgb(255,235,59)",
-  navHistory: [0],
-  navIndex: 0,
-  selectionMenu: null,
-  dictionaryQuery: null,
-  paginated: false,
+  fontFamily: "Inter",
+  lineHeight: 1.5,
+  margin: 40,
+  theme: "light",
+  isTwoPage: false,
+  paginationMode: false,
 };
 
-export const useEpubStore = create<EpubStoreState & EpubStoreActions>((set, get) => ({
-  ...initialState,
-
-  setSpineIndex: (idx) => set({ spineIndex: idx }),
-  setFontSize: (sizeOrFn) => set((s) => ({
-    fontSize: typeof sizeOrFn === "function" ? sizeOrFn(s.fontSize) : sizeOrFn,
-  })),
-  setTheme: (theme) => set({ theme }),
-
-  setSidebarTab: (tabOrFn) => set((s) => ({
-    sidebarTab: typeof tabOrFn === "function" ? tabOrFn(s.sidebarTab) : tabOrFn,
-  })),
-  setShowSearch: (showOrFn) => set((s) => ({
-    showSearch: typeof showOrFn === "function" ? showOrFn(s.showSearch) : showOrFn,
-  })),
-
-  setReady: (ready) => set({ ready }),
-  setError: (error) => set({ error }),
-  setHasUnsavedChanges: (value) => set({ hasUnsavedChanges: value }),
-  setChapterLoading: (loading) => set({ chapterLoading: loading }),
-  setShowUnsavedDialog: (show) => set({ showUnsavedDialog: show }),
-
+export const useEpubStore = create<EpubState>((set) => ({
+  page: 1,
+  totalPages: 1,
+  cfi: null,
+  navHistory: [],
+  navIndex: -1,
+  settings: DEFAULT_SETTINGS,
+  sidebarTab: null,
+  showSearch: false,
   setSearchQuery: (query) => set({ searchQuery: query }),
-  setSearchBarSeed: (seed) => set({ searchBarSeed: seed }),
   setSearchResults: (results) => set({ searchResults: results }),
-  setCurrentResultIdx: (idxOrFn) => set((s) => ({
-    currentResultIdx: typeof idxOrFn === "function" ? idxOrFn(s.currentResultIdx) : idxOrFn,
+  searchResults: [],
+  currentResultIdx: 0,
+  hasUnsavedChanges: false,
+
+  setPage: (page) => set({ page }),
+  setTotalPages: (totalPages) => set({ totalPages }),
+  setCfi: (cfi) => set({ cfi }),
+  setSettings: (settings) => set((state) => ({
+    settings: typeof settings === "function" ? settings(state.settings) : settings,
   })),
-  resetSearch: () => set({
+  setSidebarTab: (sidebarTab) => set({ sidebarTab }),
+  setShowSearch: (showSearch) => set({ showSearch }),
+  setCurrentResultIdx: (currentResultIdx) => set({ currentResultIdx }),
+  setHasUnsavedChanges: (hasUnsavedChanges) => set({ hasUnsavedChanges }),
+  pushNavHistory: (cfi) => set((state) => {
+    const newHistory = state.navHistory.slice(0, state.navIndex + 1);
+    newHistory.push(cfi);
+    return { navHistory: newHistory, navIndex: newHistory.length - 1 };
+  }),
+  setNavIndex: (navIndex) => set({ navIndex }),
+  reset: () => set({
+    page: 1,
+    totalPages: 1,
+    cfi: null,
+    navHistory: [],
+    navIndex: -1,
+    settings: DEFAULT_SETTINGS,
+    sidebarTab: null,
     showSearch: false,
-    searchBarSeed: "",
+    searchQuery: "",
     searchResults: [],
     currentResultIdx: 0,
-    searchQuery: "",
+    hasUnsavedChanges: false,
   }),
-
-  setHighlightColor: (color) => set({ highlightColor: color }),
-
-  pushNavHistory: (idx) => {
-    const { navHistory, navIndex } = get();
-    const nh = navHistory.slice(0, navIndex + 1);
-    nh.push(idx);
-    set({ navHistory: nh, navIndex: nh.length - 1 });
-  },
-  setNavIndex: (idxOrFn) => set((s) => ({
-    navIndex: typeof idxOrFn === "function" ? idxOrFn(s.navIndex) : idxOrFn,
-  })),
-  setNavHistory: (histOrFn) => set((s) => ({
-    navHistory: typeof histOrFn === "function" ? histOrFn(s.navHistory) : histOrFn,
-  })),
-
-  setSelectionMenu: (menu) => set({ selectionMenu: menu }),
-  setDictionaryQuery: (query) => set({ dictionaryQuery: query }),
-
-  setPaginated: (value) => set({ paginated: value }),
-
-  reset: () => set(initialState),
 }));

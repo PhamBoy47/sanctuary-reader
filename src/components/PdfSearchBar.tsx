@@ -84,13 +84,13 @@ export function PdfSearchBar({
           {totalResults > 0 ? `${currentResult}/${totalResults}` : "0 results"}
         </span>
       )}
-      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onPrevResult} disabled={totalResults === 0}>
+      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onPrevResult} disabled={totalResults === 0} title="Previous match">
         <ChevronUp className="h-3 w-3" />
       </Button>
-      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onNextResult} disabled={totalResults === 0}>
+      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onNextResult} disabled={totalResults === 0} title="Next match">
         <ChevronDown className="h-3 w-3" />
       </Button>
-      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose} title="Close search">
         <X className="h-3 w-3" />
       </Button>
     </div>
