@@ -360,7 +360,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       .catch((error) => {
         if (!cancelled) {
           console.error("Failed to load PDF", error);
-          setError("Could not open this PDF file. The file may be corrupt or uses unsupported features.");
+          setError(`Could not open this PDF file: ${(error as Error)?.message || "The file may be corrupt or uses unsupported features."}`);
         }
       });
     return () => { cancelled = true; loadingTask.destroy(); };
