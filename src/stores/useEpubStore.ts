@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { EpubSettings } from "../types/epub";
 
-// Canonical EPUB viewer store. Keep EPUB and PDF Zustand stores under src/stores.
 export type EpubThemeMode = "original" | "light" | "sepia" | "warm" | "cool" | "dark" | "midnight";
 
 export interface EpubSearchResult {
@@ -10,27 +9,21 @@ export interface EpubSearchResult {
 }
 
 interface EpubState {
-  // Navigation
   page: number;
   totalPages: number;
   cfi: string | null;
   navHistory: string[];
   navIndex: number;
 
-  // View settings
   settings: EpubSettings;
   sidebarTab: "toc" | "bookmarks" | "highlights" | "settings" | null;
 
-  // Search
   showSearch: boolean;
   searchQuery: string;
   searchResults: EpubSearchResult[];
   currentResultIdx: number;
 
-  // UI State
   setHasUnsavedChanges: (value: boolean) => void;
-
-  // Actions
   setPage: (page: number) => void;
   setTotalPages: (total: number) => void;
   setCfi: (cfi: string | null) => void;
@@ -44,6 +37,8 @@ interface EpubState {
   pushNavHistory: (cfi: string) => void;
   setNavIndex: (idx: number) => void;
   reset: () => void;
+  saveSettings: (fileId: string) => void;
+  loadSettings: (fileId: string) => void;
 }
 
 const DEFAULT_SETTINGS: EpubSettings = {
@@ -56,7 +51,7 @@ const DEFAULT_SETTINGS: EpubSettings = {
   paginationMode: false,
 };
 
-export const useEpubStore = create<EpubState>((set) => ({
+export const useEpubStore = create<EpubState>((set, get) => ({
   page: 1,
   totalPages: 1,
   cfi: null,
@@ -65,6 +60,7 @@ export const useEpubStore = create<EpubState>((set) => ({
   settings: DEFAULT_SETTINGS,
   sidebarTab: null,
   showSearch: false,
+  searchQuery: "",
   setSearchQuery: (query) => set({ searchQuery: query }),
   setSearchResults: (results) => set({ searchResults: results }),
   searchResults: [],
@@ -101,4 +97,18 @@ export const useEpubStore = create<EpubState>((set) => ({
     currentResultIdx: 0,
     hasUnsavedChanges: false,
   }),
+  saveSettings: (fileId: string) => {
+    const { settings, page } = get();
+    localStorage.setItem(`epub-settings-${fileId}`, JSON.stringify(settings));
+    localStorage.setItem(`epub-progress-${fileId}`, String(page > 0 ? page - 1 : 0));
+  },
+  loadSettings: (fileId: string) => {
+    const saved = localStorage.getItem(`epub-settings-${fileId}`);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        set({ settings: { ...DEFAULT_SETTINGS, ...parsed } });
+      } catch { /* ignore corrupt settings */ }
+    }
+  },
 }));

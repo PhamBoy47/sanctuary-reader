@@ -1,42 +1,31 @@
-/**
- * Hook for EPUB column-based pagination.
- * Uses CSS multi-column layout to divide a scrolling chapter into discrete "pages."
- */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface UseEpubPaginationReturn {
-  /** Current page within the chapter (1-based) */
   currentPage: number;
-  /** Total pages in the current chapter */
   totalPages: number;
-  /** Go to next page (within chapter). Returns true if there's a next page. */
   nextPage: () => boolean;
-  /** Go to previous page (within chapter). Returns true if there's a prev page. */
   prevPage: () => boolean;
-  /** Go to a specific page */
   goToPage: (page: number) => void;
-  /** Apply pagination CSS to an iframe */
   applyPagination: (iframe: HTMLIFrameElement, viewportWidth: number, viewportHeight: number) => void;
-  /** Remove pagination CSS from an iframe */
   removePagination: (iframe: HTMLIFrameElement) => void;
-  /** Recalculate total pages (call after chapter load or resize) */
   recalculate: (iframe: HTMLIFrameElement, viewportWidth: number) => void;
 }
 
 const PAGINATION_STYLE_ID = "sanctuary-pagination-style";
-const GAP = 40; // px gap between columns
+const GAP = 40;
 
-export function useEpubPagination(): UseEpubPaginationReturn {
+export function useEpubPagination(iframeRef: React.RefObject<HTMLIFrameElement | null>): UseEpubPaginationReturn {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const columnWidthRef = useRef(0);
+  const docRef = useRef<Document | null>(null);
 
   const applyPagination = useCallback((iframe: HTMLIFrameElement, viewportWidth: number, viewportHeight: number) => {
     const doc = iframe.contentDocument;
     if (!doc?.body) return;
 
-    // Remove existing pagination style if any
     doc.getElementById(PAGINATION_STYLE_ID)?.remove();
+    docRef.current = doc;
 
     const colWidth = viewportWidth - GAP * 2;
     columnWidthRef.current = viewportWidth;
@@ -66,11 +55,9 @@ export function useEpubPagination(): UseEpubPaginationReturn {
     `;
     doc.head.appendChild(style);
 
-    // Reset to page 1
     doc.body.style.transform = "translateX(0)";
     setCurrentPage(1);
 
-    // Calculate total pages after a frame (let layout settle)
     requestAnimationFrame(() => {
       const scrollW = doc.body.scrollWidth;
       const pages = Math.max(1, Math.ceil(scrollW / viewportWidth));
@@ -85,6 +72,7 @@ export function useEpubPagination(): UseEpubPaginationReturn {
     if (doc.body) {
       doc.body.style.transform = "";
     }
+    docRef.current = null;
     setCurrentPage(1);
     setTotalPages(1);
   }, []);
@@ -97,7 +85,6 @@ export function useEpubPagination(): UseEpubPaginationReturn {
       const scrollW = doc.body.scrollWidth;
       const pages = Math.max(1, Math.ceil(scrollW / viewportWidth));
       setTotalPages(pages);
-      // Clamp current page
       setCurrentPage((c) => Math.min(c, pages));
     });
   }, []);
@@ -109,14 +96,8 @@ export function useEpubPagination(): UseEpubPaginationReturn {
     });
   }, [totalPages]);
 
-  // Apply transform whenever currentPage changes
-  const iframeDocRef = useRef<Document | null>(null);
-
   const applyTransform = useCallback((page: number) => {
-    // We need a reference to the iframe doc — we'll get it from the applyPagination call
-    // For now, search for the iframe in the DOM
-    const iframe = document.querySelector<HTMLIFrameElement>("iframe");
-    const doc = iframe?.contentDocument;
+    const doc = docRef.current;
     if (!doc?.body) return;
     const offset = -(page - 1) * columnWidthRef.current;
     doc.body.style.transform = `translateX(${offset}px)`;

@@ -13,12 +13,7 @@ export interface SpineItem {
   href: string;
 }
 
-export interface EpubTocItem {
-  id: string;
-  label: string;
-  href: string;
-  children: EpubTocItem[];
-}
+import type { EpubTocItem } from "@/types/epub";
 
 export interface ParsedEpub {
   zip: JSZip;
@@ -89,7 +84,7 @@ export function useEpubEngine() {
         const label = el.querySelector("navLabel text")?.textContent?.trim() ?? "Section";
         const src = el.querySelector("content")?.getAttribute("src") ?? "";
         const href = src ? opfDir + src.split("#")[0] : "";
-        const children = walk(Array.from(el.querySelectorAll(":scope > navPoint")));
+        const children = walk(Array.from(el.children).filter((c) => c.tagName === "navPoint") as Element[]);
         return { id: `toc-${n++}`, label, href, children };
       });
     };
@@ -104,12 +99,12 @@ export function useEpubEngine() {
     if (!nav) return [];
     let n = 0;
     const walkOl = (ol: Element): EpubTocItem[] => {
-      return Array.from(ol.querySelectorAll(":scope > li")).map((li) => {
-        const a = li.querySelector(":scope > a");
+      return Array.from(ol.children).filter((c) => c.tagName === "LI").map((li) => {
+        const a = li.querySelector("a");
         const label = a?.textContent?.trim() ?? "Section";
         const rawHref = a?.getAttribute("href") ?? "";
         const href = rawHref ? opfDir + rawHref.split("#")[0] : "";
-        const childOl = li.querySelector(":scope > ol");
+        const childOl = li.querySelector("ol");
         return { id: `toc-${n++}`, label, href, children: childOl ? walkOl(childOl) : [] };
       });
     };
@@ -142,7 +137,7 @@ export function useEpubEngine() {
     }
     for (const { token, resolved } of jobs) {
       const uri = await toDataUri(zip, resolved);
-      if (uri) css = css.split(token).join(`url("${uri}")`);
+      if (uri) css = css.replace(token, `url("${uri}")`);
     }
     return css;
   }, [resolvePath, toDataUri]);
@@ -154,55 +149,48 @@ export function useEpubEngine() {
     return inlineCssUrls(raw, getDir(cssPath), zip);
   }, [getDir, inlineCssUrls]);
 
-  const themeCSS = (t: typeof themes[EpubThemeMode], fontSize: number) => {
+  const themeCSS = (t: typeof themes[EpubThemeMode], fontSize: number, fontFamily?: string) => {
     const isLight = ["#ffffff", "#f4ecd8", "#fdf6e3", "#eef4fb"].includes(t.bg);
     const mutedFg = isLight ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.35)";
     const borderColor = isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
+    const family = fontFamily || "'Georgia', 'Palatino Linotype', 'Book Antiqua', serif";
     return `
-      html { font-size: ${fontSize}% !important; }
+      html { font-size: ${fontSize}%; }
       html, body {
-        background:    ${t.bg}  !important;
-        color:         ${t.fg}  !important;
-        font-family:   'Georgia', 'Palatino Linotype', 'Book Antiqua', serif !important;
-        font-size:     1rem     !important;
-        line-height:   1.85     !important;
-        letter-spacing: 0.01em  !important;
-        padding:       2rem 4rem !important;
-        margin:        0        !important;
-        max-width:     720px    !important;
-        margin-left:   auto     !important;
-        margin-right:  auto     !important;
-        -webkit-font-smoothing: antialiased !important;
+        background:    ${t.bg};
+        color:         ${t.fg};
+        font-family:   ${family};
+        font-size:     1rem;
+        line-height:   1.85;
+        letter-spacing: 0.01em;
+        padding:       2rem 4rem;
+        margin:        0;
+        max-width:     720px;
+        margin-left:   auto;
+        margin-right:  auto;
+        -webkit-font-smoothing: antialiased;
       }
-      /* Selection */
-      ::selection { background: ${t.selectionBg} !important; }
-      /* Headings */
-      h1 { font-size: 1.8em !important; font-weight: 700 !important; line-height: 1.2 !important; margin: 1.5em 0 0.5em !important; color: ${t.fg} !important; }
-      h2 { font-size: 1.4em !important; font-weight: 600 !important; line-height: 1.3 !important; margin: 1.3em 0 0.4em !important; color: ${t.fg} !important; }
-      h3,h4,h5,h6 { font-weight: 600 !important; margin: 1em 0 0.3em !important; color: ${t.fg} !important; }
-      /* Body text */
-      p { margin: 0 0 0.9em !important; color: ${t.fg} !important; }
-      p + p { text-indent: 1.5em !important; margin-top: 0 !important; }
-      /* Inline */
-      span, li, td, th, div { color: ${t.fg} !important; }
-      /* Links */
-      a { color: ${t.link} !important; text-decoration: none !important; border-bottom: 1px solid ${t.link}44 !important; }
-      a:hover { border-bottom-color: ${t.link} !important; }
-      /* Blockquote */
+      ::selection { background: ${t.selectionBg}; }
+      h1 { font-size: 1.8em; font-weight: 700; line-height: 1.2; margin: 1.5em 0 0.5em; }
+      h2 { font-size: 1.4em; font-weight: 600; line-height: 1.3; margin: 1.3em 0 0.4em; }
+      h3,h4,h5,h6 { font-weight: 600; margin: 1em 0 0.3em; }
+      p { margin: 0 0 0.9em; }
+      p + p { text-indent: 1.5em; margin-top: 0; }
+      body > p:first-of-type { text-indent: 0; }
+      span, li, td, th, div { color: ${t.fg}; }
+      a { color: ${t.link}; text-decoration: none; border-bottom: 1px solid ${t.link}44; }
+      a:hover { border-bottom-color: ${t.link}; }
       blockquote {
-        border-left: 3px solid ${t.link}66 !important;
-        margin: 1.2em 0 1.2em 0 !important;
-        padding: 0.6em 1.2em !important;
-        color: ${mutedFg} !important;
-        font-style: italic !important;
+        border-left: 3px solid ${t.link}66;
+        margin: 1.2em 0;
+        padding: 0.6em 1.2em;
+        color: ${mutedFg};
+        font-style: italic;
       }
-      /* HR */
-      hr { border: none !important; border-top: 1px solid ${borderColor} !important; margin: 2em 0 !important; }
-      /* Images */
-      img { max-width: 100% !important; height: auto !important; border-radius: 6px !important; display: block !important; margin: 1em auto !important; }
-      /* Code */
-      code, pre { font-family: ui-monospace, 'JetBrains Mono', monospace !important; font-size: 0.88em !important; }
-      pre { background: ${borderColor} !important; padding: 1em !important; border-radius: 6px !important; overflow-x: auto !important; }
+      hr { border: none; border-top: 1px solid ${borderColor}; margin: 2em 0; }
+      img { max-width: 100%; height: auto; border-radius: 6px; display: block; margin: 1em auto; }
+      code, pre { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 0.88em; }
+      pre { background: ${borderColor}; padding: 1em; border-radius: 6px; overflow-x: auto; }
     `;
   };
 
@@ -240,6 +228,7 @@ export function useEpubEngine() {
     href: string,
     theme: EpubThemeMode,
     fontSize: number,
+    fontFamily?: string,
   ): Promise<string> => {
     if (!parsedEpub) throw new Error("EPUB not loaded");
     const { zip } = parsedEpub;
@@ -268,7 +257,7 @@ export function useEpubEngine() {
     doc.querySelectorAll("script").forEach((s) => s.remove());
     doc.querySelectorAll('meta[name="viewport"]').forEach((m) => m.remove());
     const override = doc.createElement("style");
-    override.textContent = themeCSS(themes[theme], fontSize);
+    override.textContent = themeCSS(themes[theme], fontSize, fontFamily);
     doc.head.appendChild(override);
     return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
   }, [fetchCss, getDir, inlineCssUrls, parsedEpub, resolvePath, toDataUri]);

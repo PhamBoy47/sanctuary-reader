@@ -124,15 +124,5 @@ export function DictionaryPopover({ word, definitions, onClose, position }: Dict
   );
 }
 
-// Global CSS for MDict content (added to index.css or here)
-// This handles standard MDict styling conventions
-const style = document.createElement('style');
-style.textContent = `
-  .dictionary-html-content p { margin-bottom: 0.5em; }
-  .dictionary-html-content font[color="red"] { color: hsl(var(--destructive)); }
-  .dictionary-html-content font[color="blue"] { color: hsl(var(--primary)); }
-  .dictionary-html-content b { color: hsl(var(--foreground)); font-weight: 600; }
-  /* Prevent dictionary styles from taking over */
-  .dictionary-html-content * { max-width: 100% !important; }
-`;
-document.head.appendChild(style);
+// Global CSS for MDict content is added in index.css via @layer utilities
+// No module-level side effects to avoid style duplication on hot reload.

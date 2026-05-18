@@ -1,8 +1,3 @@
-/**
- * Persistent annotation store using IndexedDB.
- * Stores bookmarks, highlights, and symbol annotations per document.
- */
-
 export interface Bookmark {
   id: string;
   fileId: string;
@@ -15,17 +10,11 @@ export interface Highlight {
   id: string;
   fileId: string;
   page: number;
-  /** RGB color string e.g. "rgb(255,235,59)" */
   color: string;
-  /** The highlighted text content */
   text: string;
-  /** Serialised range info for re-rendering (PDF) */
   rects: { x: number; y: number; w: number; h: number }[];
-  /** EPUB: character offset from chapter text start */
   charOffset?: number;
-  /** EPUB: length of highlighted text in characters */
   charLength?: number;
-  /** EPUB: Canonical Fragment Identifier for robust anchoring */
   cfi?: string;
   createdAt: number;
 }
@@ -35,7 +24,6 @@ export interface SymbolAnnotation {
   fileId: string;
   page: number;
   symbol: string;
-  /** Position as fraction of page (0-1) */
   x: number;
   y: number;
   createdAt: number;
@@ -74,7 +62,25 @@ function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-// ── Bookmarks ──────────────────────────────────────────────────────
+async function withDb<T>(mode: IDBTransactionMode, storeName: string, fn: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const req = fn(tx.objectStore(storeName));
+    req.onsuccess = () => { db.close(); resolve(req.result); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function withDbMultiple<T>(mode: IDBTransactionMode, storeNames: string[], fn: (stores: IDBObjectStore[]) => void): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeNames, mode);
+    fn(storeNames.map(s => tx.objectStore(s)));
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
 
 export async function getBookmarks(fileId: string): Promise<Bookmark[]> {
   const db = await openDB();
@@ -82,8 +88,8 @@ export async function getBookmarks(fileId: string): Promise<Bookmark[]> {
     const tx = db.transaction(BOOKMARKS_STORE, "readonly");
     const idx = tx.objectStore(BOOKMARKS_STORE).index("fileId");
     const req = idx.getAll(fileId);
-    req.onsuccess = () => resolve((req.result as Bookmark[]).sort((a, b) => a.page - b.page));
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => { db.close(); resolve((req.result as Bookmark[]).sort((a, b) => a.page - b.page)); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
@@ -99,8 +105,8 @@ export async function addBookmark(fileId: string, page: number, label?: string):
   return new Promise((resolve, reject) => {
     const tx = db.transaction(BOOKMARKS_STORE, "readwrite");
     tx.objectStore(BOOKMARKS_STORE).put(bookmark);
-    tx.oncomplete = () => resolve(bookmark);
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(bookmark); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -109,8 +115,8 @@ export async function removeBookmark(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(BOOKMARKS_STORE, "readwrite");
     tx.objectStore(BOOKMARKS_STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -127,12 +133,10 @@ export async function updateBookmarkLabel(id: string, label: string): Promise<vo
         store.put(bm);
       }
     };
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
-
-// ── Highlights ─────────────────────────────────────────────────────
 
 export async function getHighlights(fileId: string): Promise<Highlight[]> {
   const db = await openDB();
@@ -140,8 +144,8 @@ export async function getHighlights(fileId: string): Promise<Highlight[]> {
     const tx = db.transaction(HIGHLIGHTS_STORE, "readonly");
     const idx = tx.objectStore(HIGHLIGHTS_STORE).index("fileId");
     const req = idx.getAll(fileId);
-    req.onsuccess = () => resolve((req.result as Highlight[]).sort((a, b) => a.page - b.page));
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => { db.close(); resolve((req.result as Highlight[]).sort((a, b) => a.page - b.page)); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
@@ -171,8 +175,8 @@ export async function addHighlight(
   return new Promise((resolve, reject) => {
     const tx = db.transaction(HIGHLIGHTS_STORE, "readwrite");
     tx.objectStore(HIGHLIGHTS_STORE).put(highlight);
-    tx.oncomplete = () => resolve(highlight);
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(highlight); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -181,12 +185,10 @@ export async function removeHighlight(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(HIGHLIGHTS_STORE, "readwrite");
     tx.objectStore(HIGHLIGHTS_STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
-
-// ── Symbol Annotations ─────────────────────────────────────────────
 
 export async function getSymbolAnnotations(fileId: string): Promise<SymbolAnnotation[]> {
   const db = await openDB();
@@ -194,8 +196,8 @@ export async function getSymbolAnnotations(fileId: string): Promise<SymbolAnnota
     const tx = db.transaction(SYMBOLS_STORE, "readonly");
     const idx = tx.objectStore(SYMBOLS_STORE).index("fileId");
     const req = idx.getAll(fileId);
-    req.onsuccess = () => resolve(req.result as SymbolAnnotation[]);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => { db.close(); resolve(req.result as SymbolAnnotation[]); };
+    req.onerror = () => { db.close(); reject(req.error); };
   });
 }
 
@@ -219,8 +221,8 @@ export async function addSymbolAnnotation(
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SYMBOLS_STORE, "readwrite");
     tx.objectStore(SYMBOLS_STORE).put(ann);
-    tx.oncomplete = () => resolve(ann);
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(ann); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -229,20 +231,18 @@ export async function removeSymbolAnnotation(id: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SYMBOLS_STORE, "readwrite");
     tx.objectStore(SYMBOLS_STORE).delete(id);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
-
-// ── Restore functions (for undo/redo — re-insert with original ID) ──
 
 export async function restoreBookmark(bookmark: Bookmark): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(BOOKMARKS_STORE, "readwrite");
     tx.objectStore(BOOKMARKS_STORE).put(bookmark);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -251,8 +251,8 @@ export async function restoreHighlight(highlight: Highlight): Promise<void> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(HIGHLIGHTS_STORE, "readwrite");
     tx.objectStore(HIGHLIGHTS_STORE).put(highlight);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
 
@@ -261,7 +261,7 @@ export async function restoreSymbolAnnotation(ann: SymbolAnnotation): Promise<vo
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SYMBOLS_STORE, "readwrite");
     tx.objectStore(SYMBOLS_STORE).put(ann);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }

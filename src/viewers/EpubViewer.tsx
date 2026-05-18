@@ -1,14 +1,5 @@
-/**
- * EpubViewer — zero epubjs dependency.
- *
- * Reads the EPUB ZIP directly with JSZip (already proven to work in this
- * project), parses the OPF/NCX/NAV structure ourselves, rewrites all
- * relative asset URLs to inline data: URIs, and renders each spine chapter
- * inside a sandboxed <iframe srcdoc>.
- */
-
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { ListTree, Minus, Plus, Book, Search, Bookmark as BookmarkIcon, Highlighter, Copy, Download, GripVertical, ChevronLeft, ChevronRight, Columns, ScrollText } from "lucide-react";
+import { ListTree, Minus, Plus, Book, Search, Bookmark as BookmarkIcon, Highlighter, Copy, Download, GripVertical, ChevronLeft, ChevronRight, Columns, ScrollText, RotateCcw } from "lucide-react";
 import { ExportDialog } from "@/components/ExportDialog";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
@@ -35,7 +26,6 @@ import { generateCfi, resolveCfi } from "@/lib/epubCfi";
 
 interface EpubViewerProps { file: FileEntry; onBack: () => void; }
 
-// Flatten TOC for search/indicators
 function flatToc(items: EpubTocItem[]): EpubTocItem[] {
   return items.flatMap((i) => [i, ...flatToc(i.children ?? [])]);
 }
@@ -46,6 +36,10 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const isInitialLoad = useRef(true);
   const epubTexts = useRef<{ index: number; text: string }[]>([]);
+  const fileIdRef = useRef(file.id);
+  const searchIdRef = useRef(0);
+  const extractCancelledRef = useRef(false);
+  const highlightsCacheRef = useRef<Highlight[]>([]);
 
   const { search: runWorkerSearch, results: workerResults, isSearching } = useSearchWorker();
   const {
@@ -56,7 +50,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     applyPagination,
     removePagination,
     recalculate,
-  } = useEpubPagination();
+  } = useEpubPagination(iframeRef);
 
   const {
     page: spineIndex, setPage: setSpineIndex,
@@ -69,15 +63,30 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     currentResultIdx, setCurrentResultIdx,
     hasUnsavedChanges, setHasUnsavedChanges,
     navHistory, navIndex, pushNavHistory, setNavIndex,
-    reset: resetStore
+    reset: resetStore, saveSettings, loadSettings,
   } = useEpubStore();
 
   useEffect(() => {
+    if (fileIdRef.current !== file.id) {
+      fileIdRef.current = file.id;
+      resetStore();
+      loadSettings(file.id);
+      epubTexts.current = [];
+      highlightsCacheRef.current = [];
+      extractCancelledRef.current = true;
+      isInitialLoad.current = true;
+    }
+  }, [file.id, resetStore, loadSettings]);
+
+  useEffect(() => {
+    const nextSearchId = ++searchIdRef.current;
     setSearchResults(workerResults.map((result) => ({
       spineIndex: result.page,
       matchIndex: result.index,
     })));
-    if (workerResults.length > 0) setCurrentResultIdx(1);
+    if (nextSearchId === searchIdRef.current && workerResults.length > 0) {
+      setCurrentResultIdx(1);
+    }
   }, [workerResults, setSearchResults, setCurrentResultIdx]);
 
   const { loadEpub, processChapter, parsedEpub, themes } = useEpubEngine();
@@ -87,6 +96,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const [toc, setToc] = useState<EpubTocItem[]>([]);
   const [activeTocId, setActiveTocId] = useState<string | null>(null);
   const [chapterLoading, setChapterLoading] = useState(false);
+  const [chapterError, setChapterError] = useState<string | null>(null);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [dictionaryQuery, setDictionaryQuery] = useState<{ word: string, x: number, y: number, results: string[] } | null>(null);
@@ -98,13 +108,15 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const isNavJump = useRef(false);
 
   const handleDefine = useCallback(async (word: string, x: number, y: number) => {
-    const results = await lookupWord(word); 
+    const results = await lookupWord(word);
     setDictionaryQuery({ word, x, y, results });
     setSelectionMenu(null);
   }, []);
 
   const reloadHighlights = useCallback(async () => {
-    setHighlights(await getHighlights(file.id));
+    const hl = await getHighlights(file.id);
+    highlightsCacheRef.current = hl;
+    setHighlights(hl);
   }, [file.id]);
 
   useEffect(() => { reloadHighlights(); }, [reloadHighlights, history.annotationVersion]);
@@ -114,7 +126,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     if (!frame) return;
     const doc = frame.contentDocument;
     if (!doc?.body) return;
-    const chapterHighlights = highlights.filter(h => h.page === spineIndex);
+    const chapterHighlights = highlightsCacheRef.current.filter(h => h.page === spineIndex);
     if (chapterHighlights.length === 0) return;
 
     for (const hl of chapterHighlights) {
@@ -128,10 +140,9 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             mark.style.borderRadius = "2px";
             mark.style.padding = "0 1px";
             range.surroundContents(mark);
-          } catch (e) { console.error("CFI Highlight apply failed:", e); }
+          } catch { /* skip failed highlights */ }
         }
       } else if (hl.charOffset !== undefined && hl.charLength !== undefined) {
-        // Fallback for old highlights without CFI
         const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
         const textNodes: Text[] = [];
         let n: Node | null;
@@ -159,7 +170,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         }
       }
     }
-  }, [highlights, spineIndex]);
+  }, [spineIndex]);
 
   const applySearchHighlightsToIframe = useCallback(() => {
     const frame = iframeRef.current;
@@ -179,8 +190,8 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     if (!searchQuery.trim()) return;
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
-    let n: Node | null;
-    while ((n = walker.nextNode())) textNodes.push(n as Text);
+    let node: Node | null;
+    while ((node = walker.nextNode())) textNodes.push(node as Text);
     const lq = searchQuery.toLowerCase();
     for (const tn of textNodes) {
       const text = tn.textContent || "";
@@ -230,17 +241,17 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     const frame = iframeRef.current;
     const selection = frame?.contentWindow?.getSelection();
     if (!selection || selection.rangeCount === 0) return;
-    
+
     const range = selection.getRangeAt(0);
     const cfi = generateCfi(range, spineIndex);
-    const pos = getCharOffsetFromSelection(); // Keep for legacy compat
-    
+    const pos = getCharOffsetFromSelection();
+
     await history.doAddHighlight(
-      spineIndex, 
-      highlightColor, 
-      selectionMenu.text, 
-      [], 
-      pos?.charOffset, 
+      spineIndex,
+      highlightColor,
+      selectionMenu.text,
+      [],
+      pos?.charOffset,
       pos?.charLength,
       cfi
     );
@@ -250,12 +261,21 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     setTimeout(applyHighlightsToIframe, 100);
   }, [selectionMenu, getCharOffsetFromSelection, history, spineIndex, highlightColor, applyHighlightsToIframe, setHasUnsavedChanges]);
 
+  const getTocLabelForChapter = useCallback((spineIdx: number): string => {
+    if (!parsedEpub) return `Chapter ${spineIdx + 1}`;
+    const item = parsedEpub.spine[spineIdx];
+    if (!item) return `Chapter ${spineIdx + 1}`;
+    const match = flatToc(parsedEpub.toc).find((t) => t.href === item.href);
+    return match?.label || `Chapter ${spineIdx + 1}`;
+  }, [parsedEpub]);
+
   const handleBookmarkChapter = useCallback(async () => {
-    await history.doAddBookmark(spineIndex + 1, `Chapter ${spineIndex + 1}`);
-    toast.success(`Bookmarked chapter ${spineIndex + 1}`);
+    const label = getTocLabelForChapter(spineIndex);
+    await history.doAddBookmark(spineIndex + 1, label);
+    toast.success(`Bookmarked: ${label}`);
     setHasUnsavedChanges(true);
     setSelectionMenu(null);
-  }, [history, spineIndex, setHasUnsavedChanges]);
+  }, [history, spineIndex, setHasUnsavedChanges, getTocLabelForChapter]);
 
   const handleCopySelection = useCallback(() => {
     if (!selectionMenu) return;
@@ -274,6 +294,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   useEffect(() => {
     const frame = iframeRef.current;
     if (!frame || !ready) return;
+    const currentDoc = frame.contentDocument;
     const onMouseUp = () => {
       const win = frame.contentWindow;
       const selection = win?.getSelection();
@@ -297,18 +318,20 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       applySearchHighlightsToIframe();
     };
     frame.addEventListener("load", onLoad);
-    if (frame.contentDocument) {
-      frame.contentDocument.addEventListener("mouseup", onMouseUp);
-      frame.contentDocument.addEventListener("mousedown", onMouseDown);
+    if (currentDoc) {
+      currentDoc.addEventListener("mouseup", onMouseUp);
+      currentDoc.addEventListener("mousedown", onMouseDown);
       applyHighlightsToIframe();
       applySearchHighlightsToIframe();
     }
     return () => {
       frame.removeEventListener("load", onLoad);
-      const doc = frame.contentDocument;
-      if (doc) {
-        doc.removeEventListener("mouseup", onMouseUp);
-        doc.removeEventListener("mousedown", onMouseDown);
+      if (frame.contentDocument) {
+        frame.contentDocument.removeEventListener("mouseup", onMouseUp);
+        frame.contentDocument.removeEventListener("mousedown", onMouseDown);
+      } else if (currentDoc) {
+        currentDoc.removeEventListener("mouseup", onMouseUp);
+        currentDoc.removeEventListener("mousedown", onMouseDown);
       }
     };
   }, [ready, spineIndex, dictionaryQuery, applyHighlightsToIframe, applySearchHighlightsToIframe]);
@@ -347,20 +370,29 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       setTextsExtracted(false);
       return;
     }
+    extractCancelledRef.current = false;
+    const cancelledRef = extractCancelledRef;
     const extract = async () => {
       const texts: { index: number; text: string }[] = [];
       for (let i = 0; i < parsedEpub.spine.length; i++) {
+        if (cancelledRef.current) return;
         const entry = parsedEpub.zip.file(parsedEpub.spine[i].href);
         if (!entry) continue;
-        const html = await entry.async("string");
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const text = doc.body.textContent || "";
-        texts.push({ index: i, text });
+        try {
+          const html = await entry.async("string");
+          if (cancelledRef.current) return;
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          const text = doc.body.textContent || "";
+          texts.push({ index: i, text });
+        } catch { /* skip corrupt chapter */ }
       }
-      epubTexts.current = texts;
-      setTextsExtracted(true);
+      if (!cancelledRef.current) {
+        epubTexts.current = texts;
+        setTextsExtracted(true);
+      }
     };
     extract();
+    return () => { cancelledRef.current = true; };
   }, [parsedEpub]);
 
   useEffect(() => {
@@ -375,8 +407,9 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     if (!item) return;
     let cancelled = false;
     setChapterLoading(true);
+    setChapterError(null);
 
-    processChapter(item.href, settings.theme, settings.fontSize)
+    processChapter(item.href, settings.theme, settings.fontSize, settings.fontFamily)
       .then((html) => {
         if (cancelled || !iframeRef.current) return;
         iframeRef.current.srcdoc = html;
@@ -384,7 +417,6 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         const match = flatToc(parsedEpub.toc).find((t) => t.href === item.href);
         setActiveTocId(match?.id ?? null);
 
-        // Apply pagination if enabled
         if (settings.paginationMode && iframeRef.current) {
           applyPagination(iframeRef.current, iframeRef.current.clientWidth, iframeRef.current.clientHeight);
         }
@@ -392,13 +424,13 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       .catch((err: unknown) => {
         if (!cancelled) {
           console.error("Chapter render error:", err);
+          setChapterError("Failed to render this chapter. The file may be corrupted.");
           setChapterLoading(false);
         }
       });
     return () => { cancelled = true; };
-  }, [ready, spineIndex, settings.theme, settings.fontSize, parsedEpub, processChapter, settings.paginationMode, applyPagination]);
+  }, [ready, spineIndex, settings.theme, settings.fontSize, settings.fontFamily, parsedEpub, processChapter, settings.paginationMode, applyPagination]);
 
-  // Handle pagination mode toggle
   useEffect(() => {
     if (!ready || !iframeRef.current) return;
     if (settings.paginationMode) {
@@ -408,7 +440,6 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     }
   }, [settings.paginationMode, ready, applyPagination, removePagination]);
 
-  // Recalculate on resize
   useEffect(() => {
     const handleResize = () => {
       if (settings.paginationMode && iframeRef.current) {
@@ -425,21 +456,21 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       const percentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
       updateProgress(file.id, percentage).catch(console.error);
     }
-    return () => {
-      if (ready && total > 1) {
-        const finalPercentage = Math.round((spineIndex / (total - 1)) * 100);
-        updateProgress(file.id, finalPercentage).catch(console.error);
-      }
-    };
+    return () => {};
   }, [spineIndex, ready, file.id, total]);
 
   const handleSave = useCallback(async () => {
     const percentage = total > 1 ? Math.round((spineIndex / (total - 1)) * 100) : 100;
-    await updateProgress(file.id, percentage);
-    localStorage.setItem(`epub-progress-${file.id}`, String(spineIndex));
-    setHasUnsavedChanges(false);
-    toast.success("Reading progress saved");
-  }, [spineIndex, file.id, total, setHasUnsavedChanges]);
+    try {
+      await updateProgress(file.id, percentage);
+      localStorage.setItem(`epub-progress-${file.id}`, String(spineIndex));
+      saveSettings(file.id);
+      setHasUnsavedChanges(false);
+      toast.success("Reading progress saved");
+    } catch {
+      toast.error("Failed to save progress");
+    }
+  }, [spineIndex, file.id, total, setHasUnsavedChanges, saveSettings]);
 
   const navigateToChapter = useCallback((idx: number) => {
     const clamped = Math.max(0, Math.min(total - 1, idx));
@@ -449,6 +480,28 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     isNavJump.current = false;
     setSpineIndex(clamped);
   }, [spineIndex, total, pushNavHistory, setSpineIndex]);
+
+  const navigateBack = useCallback(() => {
+    if (navIndex > 0) {
+      const prevIdx = parseInt(navHistory[navIndex - 1], 10);
+      if (!isNaN(prevIdx)) {
+        isNavJump.current = true;
+        setNavIndex(navIndex - 1);
+        setSpineIndex(prevIdx);
+      }
+    }
+  }, [navIndex, navHistory, setNavIndex, setSpineIndex]);
+
+  const navigateForward = useCallback(() => {
+    if (navIndex < navHistory.length - 1) {
+      const nextIdx = parseInt(navHistory[navIndex + 1], 10);
+      if (!isNaN(nextIdx)) {
+        isNavJump.current = true;
+        setNavIndex(navIndex + 1);
+        setSpineIndex(nextIdx);
+      }
+    }
+  }, [navIndex, navHistory, setNavIndex, setSpineIndex]);
 
   const goNext = useCallback(() => {
     if (settings.paginationMode) {
@@ -466,13 +519,13 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
   const handleSearch = useCallback((query: string) => {
     setSearchQuery(query);
-    if (!query.trim() || !parsedEpub) {
+    if (!query.trim()) {
       setSearchResults([]);
       setCurrentResultIdx(0);
       return;
     }
     runWorkerSearch(query, epubTexts.current);
-  }, [parsedEpub, runWorkerSearch, setSearchQuery, setSearchResults, setCurrentResultIdx]);
+  }, [runWorkerSearch, setSearchQuery, setSearchResults, setCurrentResultIdx]);
 
   const handleNextResult = useCallback(() => {
     if (searchResults.length === 0) return;
@@ -507,14 +560,19 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       if (ctrl && e.key === "s") { e.preventDefault(); handleSave(); return; }
       if (ctrl && e.key === "b") { e.preventDefault(); setSidebarTab(sidebarTab ? null : "toc"); return; }
       if (ctrl && e.key === ",") { e.preventDefault(); setSidebarTab("bookmarks"); return; }
+      if (ctrl && e.key === "z") { e.preventDefault(); history.undo(); return; }
+      if (ctrl && e.key === "y") { e.preventDefault(); history.redo(); return; }
+      if (ctrl && e.key === "l") { e.preventDefault(); document.documentElement.requestFullscreen?.(); return; }
       if (e.shiftKey && e.key === "H") { handleHighlightSelection(); return; }
-      if (e.key === "ArrowRight" || e.key === "PageDown") goNext();
-      else if (e.key === "ArrowLeft" || e.key === "PageUp") goPrev();
+      if (ctrl && e.key === "ArrowLeft") { e.preventDefault(); navigateBack(); return; }
+      if (ctrl && e.key === "ArrowRight") { e.preventDefault(); navigateForward(); return; }
+      if (e.key === "ArrowRight" || e.key === "PageDown") { e.preventDefault(); goNext(); }
+      else if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); goPrev(); }
       else if (e.key === " ") { e.preventDefault(); goNext(); }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [goNext, goPrev, handleSave, showSearch, handleHighlightSelection, sidebarTab, setShowSearch, setSearchQuery, setSearchResults, setCurrentResultIdx, setSidebarTab]);
+  }, [goNext, goPrev, handleSave, showSearch, handleHighlightSelection, sidebarTab, setShowSearch, setSearchQuery, setSearchResults, setCurrentResultIdx, setSidebarTab, history, navigateBack, navigateForward]);
 
   useEffect(() => {
     const fn = (e: BeforeUnloadEvent) => { if (hasUnsavedChanges) { e.preventDefault(); e.returnValue = ""; } };
@@ -523,9 +581,24 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   }, [hasUnsavedChanges]);
 
   const handleBackWithCheck = useCallback(() => {
-    if (hasUnsavedChanges) setShowUnsavedDialog(true);
+    if (hasUnsavedChanges) {
+      saveSettings(file.id);
+      setShowUnsavedDialog(true);
+    }
     else onBack();
-  }, [hasUnsavedChanges, onBack]);
+  }, [hasUnsavedChanges, onBack, saveSettings, file.id]);
+
+  const statusProgress = useMemo(() => {
+    if (settings.paginationMode) {
+      return `Chapter ${spineIndex + 1} • Page ${chapterPage} of ${chapterTotal}`;
+    }
+    if (activeTocId) {
+      const flat = flatToc(toc);
+      const found = flat.find((t) => t.id === activeTocId);
+      return found?.label || `Chapter ${spineIndex + 1} of ${total}`;
+    }
+    return ready ? `Chapter ${spineIndex + 1} of ${total}` : "Reading…";
+  }, [settings.paginationMode, spineIndex, chapterPage, chapterTotal, activeTocId, toc, ready, total]);
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -650,7 +723,6 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             title="Book content"
           />
 
-          {/* Chapter-switch shimmer overlay */}
           {chapterLoading && ready && (
             <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
@@ -660,7 +732,18 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             </div>
           )}
 
-          {/* Initial book-load state */}
+          {chapterError && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/90 gap-4 px-8 text-center">
+              <div className="h-12 w-12 rounded-2xl bg-destructive/10 border border-destructive/20 flex items-center justify-center">
+                <Book className="h-6 w-6 text-destructive/60" />
+              </div>
+              <p className="text-sm text-destructive font-medium">{chapterError}</p>
+              <Button variant="outline" size="sm" onClick={() => navigateToChapter(spineIndex)}>
+                <RotateCcw className="h-3 w-3 mr-2" /> Retry
+              </Button>
+            </div>
+          )}
+
           {!ready && !error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-background/90 z-10 pointer-events-none">
               <div className="relative">
@@ -676,7 +759,6 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             </div>
           )}
 
-          {/* Error state */}
           {error && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 z-10 px-8 text-center gap-4">
               <div className="h-12 w-12 rounded-2xl bg-destructive/10 border border-destructive/20 flex items-center justify-center">
@@ -686,11 +768,13 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
                 <p className="text-sm text-destructive font-medium">{error}</p>
                 <p className="text-xs text-muted-foreground">File must be a standard EPUB (ZIP-based, no DRM).</p>
               </div>
+              <Button variant="outline" size="sm" onClick={onBack}>
+                Go Back
+              </Button>
             </div>
           )}
 
-          {/* Floating prev/next nav arrows */}
-          {ready && !chapterLoading && (
+          {ready && !chapterLoading && !chapterError && (
             <>
               <button
                 onClick={goPrev}
@@ -711,15 +795,8 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             </>
           )}
 
-          {/* Floating status pill */}
           <EpubStatusBar
-            progress={
-              settings.paginationMode
-                ? `Chapter ${spineIndex + 1} • Page ${chapterPage} of ${chapterTotal}`
-                : activeTocId
-                  ? flatToc(toc).find((t) => t.id === activeTocId)?.label
-                  : ready ? `Chapter ${spineIndex + 1} of ${total}` : "Reading…"
-            }
+            progress={statusProgress}
             theme={themes[settings.theme].label}
             fontSize={settings.fontSize}
             hasUnsavedChanges={hasUnsavedChanges}
@@ -743,8 +820,6 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           />
         </div>
       </div>
-
-
 
       <UnsavedChangesDialog
         isOpen={showUnsavedDialog}

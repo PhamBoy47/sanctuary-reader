@@ -41,7 +41,7 @@ export function createPdfLinkService(
         }
       }
 
-      if (pageNum && pageNum >= 1 && pageNum <= totalPages) {
+      if (pageNum !== null && pageNum >= 1 && pageNum <= totalPages) {
         navigateToPage(pageNum);
       }
     },

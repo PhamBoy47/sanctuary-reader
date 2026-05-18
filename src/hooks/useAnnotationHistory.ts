@@ -5,7 +5,7 @@
  * Ctrl+Z / Ctrl+Y can reverse and replay them.
  */
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import {
   addBookmark, removeBookmark,
   addHighlight, removeHighlight,
@@ -30,9 +30,20 @@ interface AnnotationAction {
 export function useAnnotationHistory(fileId: string) {
   const undoStackRef = useRef<AnnotationAction[]>([]);
   const redoStackRef = useRef<AnnotationAction[]>([]);
+  const fileIdRef = useRef(fileId);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   const [annotationVersion, setAnnotationVersion] = useState(0);
+
+  useEffect(() => {
+    if (fileIdRef.current !== fileId) {
+      undoStackRef.current = [];
+      redoStackRef.current = [];
+      setCanUndo(false);
+      setCanRedo(false);
+      fileIdRef.current = fileId;
+    }
+  }, [fileId]);
 
   const bump = useCallback(() => setAnnotationVersion((v) => v + 1), []);
 
@@ -41,8 +52,12 @@ export function useAnnotationHistory(fileId: string) {
     setCanRedo(redoStackRef.current.length > 0);
   }, []);
 
+  const MAX_UNDO = 100;
+
   const pushUndo = useCallback((action: AnnotationAction) => {
-    undoStackRef.current = [...undoStackRef.current, action];
+    const stack = [...undoStackRef.current, action];
+    if (stack.length > MAX_UNDO) stack.splice(0, stack.length - MAX_UNDO);
+    undoStackRef.current = stack;
     redoStackRef.current = [];
     syncFlags();
   }, [syncFlags]);

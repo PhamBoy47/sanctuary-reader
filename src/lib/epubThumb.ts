@@ -48,14 +48,19 @@ export async function extractEpubCover(data: ArrayBuffer): Promise<string | null
     const href = manifestItem.getAttribute("href");
     if (!href) return null;
 
-    const relativePath = opfDir + href;
-    const cleanPath = relativePath.split("/").map(p => {
-       if (p === "..") return ""; // simplistic relative path resolver
-       return p;
-    }).filter(Boolean).join("/");
+    const resolveRelativePath = (base: string, rel: string) => {
+      const combined = base + rel;
+      const parts = combined.split("/");
+      const resolved: string[] = [];
+      for (const p of parts) {
+        if (p === "..") resolved.pop();
+        else if (p !== "." && p !== "") resolved.push(p);
+      }
+      return resolved.join("/");
+    };
+    const resolvedPath = resolveRelativePath(opfDir, href);
     
-    // Try to find the file exactly or with variations if ZIP structure is weird
-    const coverFile = zip.file(relativePath) || zip.file(cleanPath);
+    const coverFile = zip.file(resolvedPath);
     if (!coverFile) {
         // Ultimate fallback: search for anything ending with the href
         const search = Object.keys(zip.files).find(k => k.endsWith(href));

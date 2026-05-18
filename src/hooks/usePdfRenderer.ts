@@ -18,7 +18,6 @@ interface UsePdfRendererProps {
   symbolAnnotations: SymbolAnnotation[];
   totalPages: number;
   navigateToPage: (page: number) => void;
-  renderPageOffscreen?: (pageNum: number, scale: number, rotation: number, canvas: HTMLCanvasElement) => Promise<void> | void;
 }
 
 export function usePdfRenderer({
@@ -29,18 +28,19 @@ export function usePdfRenderer({
   symbolAnnotations,
   totalPages,
   navigateToPage,
-  renderPageOffscreen
 }: UsePdfRendererProps) {
   const abortControllersRef = useRef<Map<number, AbortController>>(new Map());
+  const pdfRef = useRef(pdf);
+  pdfRef.current = pdf;
 
   const renderPage = useCallback(async (
-    pageNum: number, 
-    wrapper: HTMLElement, 
+    pageNum: number,
+    wrapper: HTMLElement,
     outputScale: number
   ) => {
-    if (!pdf) return;
+    const currentPdf = pdfRef.current;
+    if (!currentPdf) return;
 
-    // Cancel any in-flight render for this page
     if (abortControllersRef.current.has(pageNum)) {
       abortControllersRef.current.get(pageNum)?.abort();
     }
@@ -48,13 +48,11 @@ export function usePdfRenderer({
     abortControllersRef.current.set(pageNum, controller);
 
     try {
-      const pdfPage = await pdf.getPage(pageNum);
+      const pdfPage = await currentPdf.getPage(pageNum);
       const viewport = pdfPage.getViewport({ scale: zoom, rotation });
 
-      // FIX: Double Buffering. Find old layers to remove LATER.
       const oldLayers = Array.from(wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer'));
 
-      // Canvas Layer
       const canvas = document.createElement("canvas");
       canvas.className = "pdf-canvas";
       canvas.width = Math.floor(viewport.width * outputScale);
@@ -63,7 +61,6 @@ export function usePdfRenderer({
       canvas.style.height = `${viewport.height}px`;
       wrapper.appendChild(canvas);
 
-      // Text Layer
       let textDiv: HTMLDivElement | null = null;
       if (settings.enableTextSelection) {
         textDiv = document.createElement("div");
@@ -75,7 +72,6 @@ export function usePdfRenderer({
         wrapper.appendChild(textDiv);
       }
 
-      // Annotation Layer
       let annotationDiv: HTMLDivElement | null = null;
       if (settings.showAnnotations) {
         annotationDiv = document.createElement("div");
@@ -84,7 +80,6 @@ export function usePdfRenderer({
         wrapper.appendChild(annotationDiv);
       }
 
-      // Symbol Overlays
       let symOverlay: HTMLDivElement | null = null;
       const pageSymbols = symbolAnnotations.filter((s) => s.page === pageNum);
       if (pageSymbols.length > 0) {
@@ -102,7 +97,6 @@ export function usePdfRenderer({
         wrapper.appendChild(symOverlay);
       }
 
-      // Cleanup helper if aborted
       const cleanupNewLayers = () => {
         canvas.remove();
         if (textDiv) textDiv.remove();
@@ -112,30 +106,22 @@ export function usePdfRenderer({
 
       if (controller.signal.aborted) { cleanupNewLayers(); return; }
 
-      // Render PDF to Canvas
-      if (renderPageOffscreen) {
-        // Off-thread rendering
-        await renderPageOffscreen(pageNum, zoom * outputScale, rotation, canvas);
-      } else {
-        // Main-thread rendering (fallback)
-        const ctx = canvas.getContext("2d");
-        if (!ctx) { cleanupNewLayers(); return; }
-        
-        const renderTask = pdfPage.render({
-          annotationMode: settings.showAnnotations 
-            ? pdfjsLib.AnnotationMode.ENABLE_FORMS 
-            : pdfjsLib.AnnotationMode.DISABLE,
-          canvasContext: ctx,
-          canvas,
-          transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
-          viewport,
-        });
-        await renderTask.promise;
-      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) { cleanupNewLayers(); return; }
+
+      const renderTask = pdfPage.render({
+        annotationMode: settings.showAnnotations
+          ? pdfjsLib.AnnotationMode.ENABLE_FORMS
+          : pdfjsLib.AnnotationMode.DISABLE,
+        canvasContext: ctx,
+        canvas,
+        transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
+        viewport,
+      });
+      await renderTask.promise;
 
       if (controller.signal.aborted) { cleanupNewLayers(); return; }
 
-      // Render Text Layer
       if (settings.enableTextSelection && textDiv) {
         const textContent = await pdfPage.getTextContent();
         if (controller.signal.aborted) { cleanupNewLayers(); return; }
@@ -148,12 +134,11 @@ export function usePdfRenderer({
         await textLayer.render();
       }
 
-      // Render Annotation Layer
       if (settings.showAnnotations && annotationDiv) {
         const annotations = await pdfPage.getAnnotations();
         if (!controller.signal.aborted && annotations.length > 0) {
           const linkService = createPdfLinkService(
-            pdf,
+            currentPdf,
             navigateToPage,
             totalPages,
           ) as unknown as AnnotationLayerRenderParams["linkService"];
@@ -167,7 +152,7 @@ export function usePdfRenderer({
             structTreeLayer: null,
             commentManager: null,
             linkService,
-            annotationStorage: (pdf as PdfDocumentWithStorage).annotationStorage,
+            annotationStorage: (currentPdf as PdfDocumentWithStorage).annotationStorage,
           };
           const annotationLayer = new pdfjsLib.AnnotationLayer(annotationLayerParams);
           await annotationLayer.render({
@@ -183,19 +168,17 @@ export function usePdfRenderer({
         }
       }
 
-      // Successful render: remove old layers
       oldLayers.forEach(el => el.remove());
 
     } catch (error) {
       if (error instanceof Error && (error.name === "RenderingCancelledException" || error.name === "AbortError")) {
-        // Expected on zoom/navigation
         return;
       }
       console.error("Error rendering page:", pageNum, error);
     } finally {
       abortControllersRef.current.delete(pageNum);
     }
-  }, [pdf, zoom, rotation, settings, symbolAnnotations, totalPages, navigateToPage, renderPageOffscreen]);
+  }, [zoom, rotation, settings, symbolAnnotations, totalPages, navigateToPage]);
 
   const cancelAllRenders = useCallback(() => {
     abortControllersRef.current.forEach(c => c.abort());

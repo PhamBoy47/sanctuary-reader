@@ -50,13 +50,18 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
     const results: { index: number; matchCount: number }[] = [];
 
     for (const { index, text } of texts) {
-      // Check if this search was cancelled
       if (activeId !== id) {
         self.postMessage({ type: "cancelled", id });
         return;
       }
 
-      const ltext = text.toLowerCase();
+      let ltext: string;
+      try {
+        ltext = (text ?? "").toLowerCase();
+      } catch {
+        continue;
+      }
+
       let count = 0;
       let pos = ltext.indexOf(lq);
       while (pos !== -1) {

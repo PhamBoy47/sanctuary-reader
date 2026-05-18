@@ -334,6 +334,16 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+   DICTIONARY POPOVER STYLES
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.dictionary-html-content p { margin-bottom: 0.5em; }
+.dictionary-html-content font[color="red"] { color: hsl(var(--destructive)); }
+.dictionary-html-content font[color="blue"] { color: hsl(var(--primary)); }
+.dictionary-html-content b { color: hsl(var(--foreground)); font-weight: 600; }
+.dictionary-html-content * { max-width: 100% !important; }
+
+/* ═══════════════════════════════════════════════════════════════════════
    PRINT STYLES
    Hide all app chrome and show only the rendered PDF canvases so the
    OS print dialog produces a clean document output.

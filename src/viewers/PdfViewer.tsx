@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { ListTree, Search, ChevronLeft, ChevronRight, GripVertical, Download } from "lucide-react";
+import { ListTree, Search, ChevronLeft, ChevronRight, GripVertical, Download, RotateCcw } from "lucide-react";
 import { DocumentTocSidebar, type TocItem } from "@/components/DocumentTocSidebar";
 import { ViewerToolbar } from "@/components/ViewerToolbar";
 import { defaultSettings, type PdfSettings } from "@/components/PdfSettingsPanel";
@@ -13,7 +13,6 @@ import { BookmarkPanel } from "@/components/BookmarkPanel";
 import { HighlightPanel } from "@/components/HighlightPanel";
 import { SymbolPanel } from "@/components/SymbolPanel";
 import { useSearchWorker } from "@/hooks/useSearchWorker";
-import { useRenderWorker } from "@/hooks/useRenderWorker";
 import { Button } from "@/components/ui/button";
 import {
   getHighlights, getSymbolAnnotations,
@@ -43,9 +42,7 @@ interface PdfTocItem extends TocItem {
   url?: string | null;
 }
 
-type PageSetter = Dispatch<SetStateAction<number>>;
 type PdfPageRef = Parameters<pdfjsLib.PDFDocumentProxy["getPageIndex"]>[0];
-type PdfDestination = string | unknown[];
 type PdfTextContentItem = Awaited<ReturnType<pdfjsLib.PDFPageProxy["getTextContent"]>>["items"][number];
 type PdfOutlineItem = {
   title?: string;
@@ -58,7 +55,7 @@ function isPdfTextItem(item: PdfTextContentItem): item is pdfjsLib.TextItem {
   return "str" in item;
 }
 
-async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: PdfDestination | unknown): Promise<number | null> {
+async function resolvePdfDestination(doc: pdfjsLib.PDFDocumentProxy, dest: unknown): Promise<number | null> {
   if (!dest) return null;
   const resolvedDest = typeof dest === "string" ? await doc.getDestination(dest) : dest;
   if (!Array.isArray(resolvedDest) || resolvedDest.length === 0) return null;
@@ -169,17 +166,14 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const pdfTexts = useRef<{ index: number; text: string }[]>([]);
 
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [dictionaryQuery, setDictionaryQuery] = useState<{ word: string, x: number, y: number, results: string[] } | null>(null);
   const [tocItems, setTocItems] = useState<PdfTocItem[]>([]);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [symbolAnnotations, setSymbolAnnotations] = useState<SymbolAnnotation[]>([]);
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
   const [showExportDialog, setShowExportDialog] = useState(false);
-  const fileData = useMemo(() => file.data ? new Uint8Array(file.data) : null, [file.data]);
 
-  // TEMPORARILY DISABLED to test if OffscreenCanvas font loading is the cause of empty boxes
-  const isRenderWorkerReady = false;
-  const renderPageOffscreen = undefined;
   const { search: runWorkerSearch, results: workerResults, isSearching } = useSearchWorker();
 
   const {
@@ -293,7 +287,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   const { renderPage, cancelAllRenders } = usePdfRenderer({
     pdf, zoom, rotation, settings, symbolAnnotations, totalPages,
     navigateToPage,
-    renderPageOffscreen: isRenderWorkerReady ? renderPageOffscreen : undefined
   });
 
   const handleSave = useCallback(async () => {
@@ -341,10 +334,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     cancelAllRenders();
     scrollAnchorRef.current = null;
 
+    setError(null);
     const loadingTask = pdfjsLib.getDocument({ 
       data: new Uint8Array(file.data),
-      standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`,
-      cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
+      standardFontDataUrl: `/pdfjs/standard_fonts/`,
+      cMapUrl: `/pdfjs/cmaps/`,
       cMapPacked: true,
     });
     loadingTask.promise
@@ -363,7 +357,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         const outline = await doc.getOutline();
         if (!cancelled) setTocItems(outline ? await mapPdfOutlineItems(doc, outline) : []);
       })
-      .catch((error) => { if (!cancelled) console.error("Failed to load PDF", error); });
+      .catch((error) => {
+        if (!cancelled) {
+          console.error("Failed to load PDF", error);
+          setError("Could not open this PDF file. The file may be corrupt or uses unsupported features.");
+        }
+      });
     return () => { cancelled = true; loadingTask.destroy(); };
   }, [cancelAllRenders, file.data, navigateToPage, setTotalPages, file.progress]);
 
@@ -481,17 +480,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setCurrentResultIdx(prev);
     navigateToPage(searchResults[prev - 1].page);
   }, [searchResults, currentResultIdx, navigateToPage, setCurrentResultIdx]);
-
-  // FIX 1 + FIX 5: When the search query changes we only need to redraw the
-  // highlight overlay — we must NOT clear renderedPagesRef (that would cause
-  // the structural effect to re-render all page canvases and jump scroll to
-  // the top). The overlay effect below is the sole owner of search highlights.
-  // (Removed the old `renderedPagesRef.current.clear()` call that was here.)
-  useEffect(() => {
-    // Only bump to trigger overlay redraw, nothing else.
-    // We rely on history.annotationVersion for DB-backed annotations;
-    // for search highlights we just need a re-render.
-  }, [searchQuery]);
 
   const handleSearchFromContext = useCallback((text: string) => {
     setSearchBarSeed(text); // captured once by PdfSearchBar's open-time effect
@@ -625,13 +613,11 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         const wrappers = container.querySelectorAll<HTMLElement>(".pdf-page");
         wrappers.forEach(wrapper => {
           const pNum = Number(wrapper.dataset.pageNumber);
-          const isVisible = displayMode === "single" 
-            ? pNum === page 
-            : pNum === (page % 2 === 0 ? page - 1 : page) || pNum === (page % 2 === 0 ? page - 1 : page) + 1;
-
-          if (!isVisible && renderedPagesRef.current.has(pNum)) {
-            wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
-            renderedPagesRef.current.delete(pNum);
+          if (renderedPagesRef.current.has(pNum)) {
+            const hasCanvas = wrapper.querySelector('.pdf-canvas');
+            if (!hasCanvas) {
+              renderedPagesRef.current.delete(pNum);
+            }
           }
         });
 
@@ -864,6 +850,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
   useEffect(() => {
     if (displayMode !== "continuous" || !viewportRef.current || !containerRef.current) return;
     const scrollContainer = viewportRef.current;
+    const isHorizontal = settings.scrollDirection === "horizontal";
     let ticking = false;
 
     const updatePageNumber = () => {
@@ -912,15 +899,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       const newVisiblePages = new Set<number>();
       for (let p = windowMin; p <= windowMax; p++) newVisiblePages.add(p);
 
-      // Unmount pages outside the virtual window
-      for (let i = 0; i < pages.length; i++) {
-        const pageEl = pages[i];
-        const pageNum = Number(pageEl.dataset.pageNumber);
-        if (!newVisiblePages.has(pageNum) && renderedPagesRef.current.has(pageNum)) {
-          pageEl.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
-          renderedPagesRef.current.delete(pageNum);
-        }
-      }
+      // Pages outside the virtual window keep their canvases cached.
+      // We don't remove canvases here - they remain in the DOM and are
+      // hidden by the scroll container's overflow. This prevents a blank
+      // flash when scrolling back to a previously-viewed page.
+      // On zoom/rotation changes, the structural effect handles cleanup via
+      // renderedPagesRef invalidation.
 
       setVisiblePages(prev => {
         if (prev.size === newVisiblePages.size && [...newVisiblePages].every(p => prev.has(p))) return prev;
@@ -938,10 +922,8 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         if (shouldRenderNow && !renderedPagesRef.current.has(p)) {
           const wrapper = containerRef.current!.querySelector<HTMLElement>(`[data-page-number="${p}"]`);
           if (wrapper) {
-            // Lock the page as rendered immediately to prevent rAF from spamming renderPage and aborting it
             renderedPagesRef.current.add(p);
             renderPage(p, wrapper, outputScale).catch(() => {
-              // If it fails or is aborted, unlock it so it can be retried later if still visible
               renderedPagesRef.current.delete(p);
             });
           }
@@ -961,12 +943,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
 
     const handleScroll = () => {
       const now = performance.now();
-      const top = scrollContainer.scrollTop;
+      const scrollPos = isHorizontal ? scrollContainer.scrollLeft : scrollContainer.scrollTop;
       const dt = (now - lastScrollTimeRef.current) / 1000;
       if (dt > 0) {
-        scrollVelocityRef.current = Math.abs(top - lastScrollTopRef.current) / dt;
+        scrollVelocityRef.current = Math.abs(scrollPos - lastScrollTopRef.current) / dt;
       }
-      lastScrollTopRef.current = top;
+      lastScrollTopRef.current = scrollPos;
       lastScrollTimeRef.current = now;
 
       if (!ticking) {
@@ -991,7 +973,7 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       scrollContainer.removeEventListener("scroll", handleScroll);
       if (scrollStopTimer) clearTimeout(scrollStopTimer);
     };
-  }, [displayMode, totalPages, setVisiblePages, setPage, renderPage]);
+  }, [displayMode, totalPages, setVisiblePages, setPage, renderPage, settings.scrollDirection]);
 
   /* Keyboard nav & Shortcuts */
   useEffect(() => {
@@ -1080,13 +1062,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         return;
       }
 
-      // Save
-      if (ctrlOrMeta && e.key === "s") {
-        e.preventDefault();
-        handleSave();
-        return;
-      }
-
       // Display modes
       if (e.key === "d") {
         const modes: DisplayMode[] = ["single", "continuous", "twopage"];
@@ -1098,8 +1073,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       // Auto-scroll toggle
       if (ctrlOrMeta && e.shiftKey && e.key === "H") {
         e.preventDefault();
-        setAutoScroll((a) => !a);
-        toast(`Auto-scroll ${!autoScroll ? "enabled" : "disabled"}`);
+        setAutoScroll((a) => {
+          toast(`Auto-scroll ${!a ? "enabled" : "disabled"}`);
+          return !a;
+        });
         return;
       }
 
@@ -1143,15 +1120,12 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         setZoom((z) => Math.max(0.4, Math.min(3, z - e.deltaY * 0.002)));
-        if (settings.autoFitWidth) {
-          zoomBeforeFit.current = null;
-          setSettings((prev) => ({ ...prev, autoFitWidth: false }));
-        }
+        zoomBeforeFit.current = null;
       }
     };
     document.addEventListener("wheel", handleWheel, { passive: false });
     return () => document.removeEventListener("wheel", handleWheel);
-  }, [setSettings, setZoom, settings.autoFitWidth]);
+  }, [setZoom]);
 
   const handlePrint = useCallback(() => { printPdf(); }, []);
   const handleRotate = useCallback(() => { setRotation((r) => (r + 90) % 360); }, [setRotation]);
@@ -1175,14 +1149,14 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
           setZoom((z) => Math.min(3, z + 0.2));
           if (settings.autoFitWidth) {
             zoomBeforeFit.current = null;
-            setSettings({ ...settings, autoFitWidth: false });
+            setSettings((prev) => ({ ...prev, autoFitWidth: false }));
           }
         }}
         onZoomOut={() => {
           setZoom((z) => Math.max(0.4, z - 0.2));
           if (settings.autoFitWidth) {
             zoomBeforeFit.current = null;
-            setSettings({ ...settings, autoFitWidth: false });
+            setSettings((prev) => ({ ...prev, autoFitWidth: false }));
           }
         }}
         onFitWidth={handleFitWidth}
@@ -1293,6 +1267,20 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         )}
 
         <div className="relative flex-1 overflow-hidden">
+          {error && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/95 px-8 text-center gap-4">
+              <div className="h-12 w-12 rounded-2xl bg-destructive/10 border border-destructive/20 flex items-center justify-center">
+                <ListTree className="h-6 w-6 text-destructive/60" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <p className="text-sm text-destructive font-medium">{error}</p>
+                <p className="text-xs text-muted-foreground">Try opening another file.</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={onBack}>
+                Go Back
+              </Button>
+            </div>
+          )}
           <div
             ref={viewportRef}
             className={`absolute inset-0 block ${scrollClass} ${placingSymbol ? "cursor-crosshair" : ""} p-4 md:p-8`}
