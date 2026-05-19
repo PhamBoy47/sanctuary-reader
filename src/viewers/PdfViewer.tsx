@@ -515,9 +515,6 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     setHasUnsavedChanges(true);
   }, [placingSymbol, history, activeSymbol, setHasUnsavedChanges]);
 
-  /* Render pages (Structural & Canvas) */
-  const renderTrigger = displayMode === "continuous" ? "all" : String(page);
-
   // Rendering logic is now managed by structural effect + usePdfRenderer hook.
   // The local renderPage function has been extracted to usePdfRenderer.ts.
 
@@ -542,23 +539,19 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
     }
   }, []);
 
-  // ─── Structural Effect ────────────────────────────────────────────────────
-  // Runs when zoom / rotation / displayMode / pdf / totalPages change.
-  // FIX 6: In continuous mode we NEVER call replaceChildren when wrappers
-  // already exist at the right count. We update wrapper dimensions in-place
-  // and invalidate only the canvases whose dimensions changed, then restore
-  // the scroll offset via the anchor saved before the rebuild.
+  // ─── Structural Effect (continuous mode) ─────────────────────────────────
+  // Only fires when zoom/rotation/displayMode/pdf/totalPages change.
+  // Does NOT include `page` — page-only navigation is handled separately
+  // by the scroll-into-view effect, avoiding a scroll-anchor fight.
   useEffect(() => {
     if (!pdf || !containerRef.current) return;
     const container = containerRef.current;
     let cancelled = false;
 
-    const buildStructure = async () => {
-      const outputScale = window.devicePixelRatio || 1;
-
+    const updateDimensions = async () => {
       if (displayMode === "continuous") {
         saveScrollAnchor();
-        
+
         await new Promise(r => setTimeout(r, 0));
         if (cancelled) return;
 
@@ -605,11 +598,10 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
         if (viewportRef.current) {
            viewportRef.current.dispatchEvent(new Event('scroll'));
         }
-
       } else {
-        await new Promise(r => setTimeout(r, 0));
-        if (cancelled) return;
-
+        // Single/two-page mode: update wrapper dimensions and invalidate
+        // canvases whose geometry changed (forces re-render).
+        const isRotated = rotation === 90 || rotation === 270;
         const wrappers = container.querySelectorAll<HTMLElement>(".pdf-page");
         wrappers.forEach(wrapper => {
           const pNum = Number(wrapper.dataset.pageNumber);
@@ -619,51 +611,83 @@ export function PdfViewer({ file, onBack }: PdfViewerProps) {
               renderedPagesRef.current.delete(pNum);
             }
           }
-        });
-
-        const isRotated = rotation === 90 || rotation === 270;
-        const renderSingleOrTwo = async (pNum: number) => {
-          const wrapper = container.querySelector<HTMLElement>(`.pdf-page[data-page-number="${pNum}"]`);
-          if (!wrapper) return;
-          
           const dim = pageDimensions[pNum];
-          let dimChanged = false;
           if (dim) {
             const w = isRotated ? dim.height : dim.width;
             const h = isRotated ? dim.width : dim.height;
             const newW = `${w * zoom}px`;
             const newH = `${h * zoom}px`;
-            dimChanged = wrapper.style.width !== newW || wrapper.style.height !== newH;
+            const dimensionsChanged = wrapper.style.width !== newW || wrapper.style.height !== newH;
             wrapper.style.width = newW;
             wrapper.style.height = newH;
-          }
-          
-          const filter = getPageFilter(settings);
-          wrapper.style.filter = filter !== "none" ? filter : "";
-
-          if (dimChanged || !renderedPagesRef.current.has(pNum)) {
-            wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
-            renderedPagesRef.current.delete(pNum);
-            renderedPagesRef.current.add(pNum);
-            renderPage(pNum, wrapper, outputScale).catch(() => {
+            if (dimensionsChanged) {
               renderedPagesRef.current.delete(pNum);
-            });
+            }
           }
-        };
-
-        if (displayMode === "twopage") {
-          const startPage = page % 2 === 0 ? page - 1 : page;
-          renderSingleOrTwo(startPage);
-          if (startPage + 1 <= totalPages) renderSingleOrTwo(startPage + 1);
-        } else {
-          renderSingleOrTwo(page);
-        }
+          wrapper.style.filter = getPageFilter(settings);
+        });
       }
     };
 
-    buildStructure();
+    updateDimensions();
     return () => { cancelled = true; };
-  }, [displayMode, zoom, rotation, pdf, totalPages, renderTrigger, settings, renderPage, pageDimensions, page, saveScrollAnchor]);
+  }, [displayMode, zoom, rotation, pdf, totalPages, settings, pageDimensions, saveScrollAnchor]);
+
+  // ─── Page Render Effect (single / twopage mode) ─────────────────────────
+  // Separated from the structural effect so that `page` changes do NOT trigger
+  // the scroll-anchor save/restore cycle in continuous mode.
+  useEffect(() => {
+    if (!pdf || displayMode === "continuous" || !containerRef.current) return;
+    const container = containerRef.current;
+    let cancelled = false;
+
+    const renderCurrentPage = async () => {
+      const outputScale = window.devicePixelRatio || 1;
+      await new Promise(r => setTimeout(r, 0));
+      if (cancelled) return;
+
+      const isRotated = rotation === 90 || rotation === 270;
+
+      const doRender = async (pNum: number) => {
+        const wrapper = container.querySelector<HTMLElement>(`.pdf-page[data-page-number="${pNum}"]`);
+        if (!wrapper) return;
+
+        const dim = pageDimensions[pNum];
+        let dimChanged = false;
+        if (dim) {
+          const w = isRotated ? dim.height : dim.width;
+          const h = isRotated ? dim.width : dim.height;
+          const newW = `${w * zoom}px`;
+          const newH = `${h * zoom}px`;
+          dimChanged = wrapper.style.width !== newW || wrapper.style.height !== newH;
+          wrapper.style.width = newW;
+          wrapper.style.height = newH;
+        }
+
+        wrapper.style.filter = getPageFilter(settings);
+
+        if (dimChanged || !renderedPagesRef.current.has(pNum)) {
+          wrapper.querySelectorAll('.pdf-canvas, .textLayer, .annotationLayer, .symbol-layer').forEach(el => el.remove());
+          renderedPagesRef.current.delete(pNum);
+          renderedPagesRef.current.add(pNum);
+          renderPage(pNum, wrapper, outputScale).catch(() => {
+            renderedPagesRef.current.delete(pNum);
+          });
+        }
+      };
+
+      if (displayMode === "twopage") {
+        const startPage = page % 2 === 0 ? page - 1 : page;
+        doRender(startPage);
+        if (startPage + 1 <= totalPages) doRender(startPage + 1);
+      } else {
+        doRender(page);
+      }
+    };
+
+    renderCurrentPage();
+    return () => { cancelled = true; };
+  }, [page, displayMode, zoom, rotation, settings, pageDimensions, renderPage, totalPages, pdf]);
 
   // ─── FIX 5: Isolated Search & Highlight Overlay Effect ───────────────────
   // This effect manages two absolutely-positioned overlay divs per page:

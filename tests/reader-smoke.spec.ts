@@ -136,6 +136,6 @@ test.describe("reader smoke flows", () => {
     await expect(page.getByRole("heading", { name: /sanctuary-smoke\.epub/i })).toBeVisible({
       timeout: 30000,
     });
-    await expect(page.locator('iframe[title="Book content"]')).toBeAttached();
+    await expect(page.locator('.epub-iframe')).toBeAttached();
   });
 });

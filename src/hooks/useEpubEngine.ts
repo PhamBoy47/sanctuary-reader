@@ -155,8 +155,8 @@ export function useEpubEngine() {
     const borderColor = isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.06)";
     const family = fontFamily || "'Georgia', 'Palatino Linotype', 'Book Antiqua', serif";
     return `
-      html { font-size: ${fontSize}%; }
-      html, body {
+      body { font-size: ${fontSize}%; }
+      body {
         background:    ${t.bg};
         color:         ${t.fg};
         font-family:   ${family};
@@ -262,5 +262,17 @@ export function useEpubEngine() {
     return "<!DOCTYPE html>" + doc.documentElement.outerHTML;
   }, [fetchCss, getDir, inlineCssUrls, parsedEpub, resolvePath, toDataUri]);
 
-  return { loadEpub, processChapter, parsedEpub, themes };
+  const processChapterBody = useCallback(async (
+    href: string,
+    theme: EpubThemeMode,
+    fontSize: number,
+    fontFamily?: string,
+  ): Promise<{ styles: string; bodyHTML: string }> => {
+    const fullHTML = await processChapter(href, theme, fontSize, fontFamily);
+    const doc = new DOMParser().parseFromString(fullHTML, "text/html");
+    const styles = Array.from(doc.head.querySelectorAll("style")).map(s => s.textContent).join("\n");
+    return { styles, bodyHTML: doc.body.innerHTML };
+  }, [processChapter]);
+
+  return { loadEpub, processChapter, processChapterBody, parsedEpub, themes };
 }

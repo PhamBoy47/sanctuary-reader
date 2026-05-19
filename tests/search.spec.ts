@@ -174,7 +174,7 @@ test.describe("search tests", () => {
     await expect(page.getByRole("heading", { name: /search-test\.epub/i })).toBeVisible({ timeout: 30000 });
 
     // Ensure we are on Chapter 1 initially
-    await expect(page.getByText(/Chapter 1/i)).toBeVisible();
+    await expect(page.getByText("1 / 2")).toBeVisible();
 
     // Open search bar using Ctrl+F
     await page.keyboard.press("Control+f");
@@ -192,7 +192,7 @@ test.describe("search tests", () => {
     await page.getByRole("button", { name: "Next match" }).click();
 
     // It should navigate to chapter 2
-    await expect(page.getByText(/Chapter 2/i)).toBeVisible();
+    await expect(page.getByText("2 / 2")).toBeVisible();
     await expect(page.getByText("2/2")).toBeVisible();
   });
 });

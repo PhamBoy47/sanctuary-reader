@@ -7,7 +7,7 @@ export function generateCfi(range: Range, spineIndex: number): string {
   return `/spine[${spineIndex}]!${startPath.path}:${startPath.offset},${endPath.path}:${endPath.offset}`;
 }
 
-export function resolveCfi(cfi: string, doc: Document): Range | null {
+export function resolveCfi(cfi: string, context: Document | ShadowRoot): Range | null {
   try {
     const match = cfi.match(/^\/spine\[\d+\]!(.+):(\d+),(.+):(\d+)$/);
     if (!match) return null;
@@ -16,12 +16,12 @@ export function resolveCfi(cfi: string, doc: Document): Range | null {
     const startOffset = parseInt(startOffsetStr, 10);
     const endOffset = parseInt(endOffsetStr, 10);
 
-    const startNode = pathToNode(startPathStr, doc);
-    const endNode = pathToNode(endPathStr, doc);
+    const startNode = pathToNode(startPathStr, context);
+    const endNode = pathToNode(endPathStr, context);
 
     if (!startNode || !endNode) return null;
 
-    const range = doc.createRange();
+    const range = document.createRange();
     range.setStart(startNode, Math.min(startOffset, startNode.textContent?.length ?? 0));
     range.setEnd(endNode, Math.min(endOffset, endNode.textContent?.length ?? 0));
     return range;
@@ -71,11 +71,11 @@ function nodeToPath(node: Node, offset: number): { path: string; offset: number 
   return { path: parts.join(""), offset };
 }
 
-function pathToNode(pathStr: string, doc: Document): Node | null {
+function pathToNode(pathStr: string, context: Document | ShadowRoot): Node | null {
   const segments = pathStr.match(/\/[a-z]+(?:\(\))?\[\d+\]/gi);
   if (!segments) return null;
 
-  let current: Node = doc;
+  let current: Node = context;
 
   for (const seg of segments) {
     const match = seg.match(/^\/([a-z]+)(?:\(\))?\[(\d+)\]$/i);
@@ -96,14 +96,18 @@ function pathToNode(pathStr: string, doc: Document): Node | null {
     }
 
     if (tag === "body") {
-      const body = (current as Document).body ?? (current as Document).querySelector("body") ?? (current as Element).querySelector("body");
+      const body = context instanceof Document
+        ? (context.body ?? context.querySelector("body"))
+        : (context as ShadowRoot).querySelector("body");
       if (!body) return null;
       current = body;
       continue;
     }
 
     if (tag === "html") {
-      const html = (current as Document).documentElement ?? (current as Element).querySelector("html");
+      const html = context instanceof Document
+        ? context.documentElement
+        : (context as ShadowRoot).querySelector("html");
       if (!html) return null;
       current = html;
       continue;

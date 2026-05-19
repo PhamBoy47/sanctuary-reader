@@ -23,6 +23,9 @@ import { useSearchWorker } from "@/hooks/useSearchWorker";
 import { useEpubPagination } from "@/hooks/useEpubPagination";
 import { EpubTocItem } from "@/types/epub";
 import { generateCfi, resolveCfi } from "@/lib/epubCfi";
+import { usePageCurl } from "@/hooks/usePageCurl";
+import { PageCurlCanvas } from "@/components/PageCurlCanvas";
+import { captureArea } from "@/lib/pageTextureCache";
 
 interface EpubViewerProps { file: FileEntry; onBack: () => void; }
 
@@ -33,13 +36,17 @@ function flatToc(items: EpubTocItem[]): EpubTocItem[] {
 export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const { settings: appSettings } = useAppSettings();
   const history = useAnnotationHistory(file.id);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const shadowHostRef = useRef<HTMLDivElement>(null);
+  const chapterBodyRef = useRef<HTMLElement | null>(null);
   const isInitialLoad = useRef(true);
   const epubTexts = useRef<{ index: number; text: string }[]>([]);
   const fileIdRef = useRef(file.id);
   const searchIdRef = useRef(0);
   const extractCancelledRef = useRef(false);
   const highlightsCacheRef = useRef<Highlight[]>([]);
+  const turnLockRef = useRef(false);
+
+  const { show3D: curlShow3D, direction: curlDirection, frontCanvas, backCanvas, start: curlStart, cancel: curlCancel, onAnimationEnd: curlOnEnd } = usePageCurl();
 
   const { search: runWorkerSearch, results: workerResults, isSearching } = useSearchWorker();
   const {
@@ -50,7 +57,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     applyPagination,
     removePagination,
     recalculate,
-  } = useEpubPagination(iframeRef);
+  } = useEpubPagination();
 
   const {
     page: spineIndex, setPage: setSpineIndex,
@@ -89,7 +96,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     }
   }, [workerResults, setSearchResults, setCurrentResultIdx]);
 
-  const { loadEpub, processChapter, parsedEpub, themes } = useEpubEngine();
+  const { loadEpub, processChapterBody, parsedEpub, themes } = useEpubEngine();
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +113,9 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   const [searchBarSeed, setSearchBarSeed] = useState("");
 
   const isNavJump = useRef(false);
+  const [pageTurnDir, setPageTurnDir] = useState<"forward" | "backward" | null>(null);
+  const pageTurnRef = useRef(false);
+  const [chapterPages, setChapterPages] = useState<Record<number, number>>({});
 
   const handleDefine = useCallback(async (word: string, x: number, y: number) => {
     const results = await lookupWord(word);
@@ -121,20 +131,23 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
   useEffect(() => { reloadHighlights(); }, [reloadHighlights, history.annotationVersion]);
 
+  const getShadowBody = useCallback((): HTMLElement | null => {
+    return chapterBodyRef.current;
+  }, []);
+
   const applyHighlightsToIframe = useCallback(() => {
-    const frame = iframeRef.current;
-    if (!frame) return;
-    const doc = frame.contentDocument;
-    if (!doc?.body) return;
+    const body = getShadowBody();
+    if (!body) return;
+    const shadow = body.getRootNode() as ShadowRoot;
     const chapterHighlights = highlightsCacheRef.current.filter(h => h.page === spineIndex);
     if (chapterHighlights.length === 0) return;
 
     for (const hl of chapterHighlights) {
       if (hl.cfi) {
-        const range = resolveCfi(hl.cfi, doc);
+        const range = resolveCfi(hl.cfi, shadow);
         if (range) {
           try {
-            const mark = doc.createElement("mark");
+            const mark = document.createElement("mark");
             mark.style.backgroundColor = hl.color;
             mark.style.opacity = "0.4";
             mark.style.borderRadius = "2px";
@@ -143,7 +156,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           } catch { /* skip failed highlights */ }
         }
       } else if (hl.charOffset !== undefined && hl.charLength !== undefined) {
-        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+        const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
         const textNodes: Text[] = [];
         let n: Node | null;
         while ((n = walker.nextNode())) textNodes.push(n as Text);
@@ -154,10 +167,10 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
             try {
               const startInNode = hl.charOffset! - offset;
               const endInNode = Math.min(startInNode + hl.charLength!, len);
-              const range = doc.createRange();
+              const range = document.createRange();
               range.setStart(tn, startInNode);
               range.setEnd(tn, endInNode);
-              const mark = doc.createElement("mark");
+              const mark = document.createElement("mark");
               mark.style.backgroundColor = hl.color;
               mark.style.opacity = "0.4";
               mark.style.borderRadius = "2px";
@@ -170,15 +183,13 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         }
       }
     }
-  }, [spineIndex]);
+  }, [spineIndex, getShadowBody]);
 
   const applySearchHighlightsToIframe = useCallback(() => {
-    const frame = iframeRef.current;
-    if (!frame) return;
-    const doc = frame.contentDocument;
-    if (!doc?.body) return;
+    const body = getShadowBody();
+    if (!body) return;
 
-    const oldMarks = doc.querySelectorAll('mark.search-match');
+    const oldMarks = body.querySelectorAll('mark.search-match');
     oldMarks.forEach(mark => {
       const parent = mark.parentNode;
       if (parent) {
@@ -188,7 +199,7 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     });
 
     if (!searchQuery.trim()) return;
-    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
     const textNodes: Text[] = [];
     let node: Node | null;
     while ((node = walker.nextNode())) textNodes.push(node as Text);
@@ -199,10 +210,10 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       const pos = ltext.indexOf(lq);
       if (pos !== -1) {
         try {
-          const range = doc.createRange();
+          const range = document.createRange();
           range.setStart(tn, pos);
           range.setEnd(tn, pos + lq.length);
-          const mark = doc.createElement("mark");
+          const mark = document.createElement("mark");
           mark.className = "search-match";
           mark.style.backgroundColor = "rgba(250, 204, 21, 0.5)";
           mark.style.border = "1px solid rgba(234, 179, 8, 0.6)";
@@ -211,22 +222,21 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         } catch { /* skip */ }
       }
     }
-  }, [searchQuery]);
+  }, [searchQuery, getShadowBody]);
 
   useEffect(() => {
     if (ready) applySearchHighlightsToIframe();
   }, [searchQuery, spineIndex, ready, applySearchHighlightsToIframe]);
 
   const getCharOffsetFromSelection = useCallback((): { charOffset: number; charLength: number } | null => {
-    const frame = iframeRef.current;
-    if (!frame) return null;
-    const doc = frame.contentDocument;
-    const selection = frame.contentWindow?.getSelection();
-    if (!doc?.body || !selection?.rangeCount) return null;
+    const body = getShadowBody();
+    if (!body) return null;
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
     const range = selection.getRangeAt(0);
     const text = selection.toString();
     if (!text) return null;
-    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
     let charOffset = 0;
     let n: Node | null;
     while ((n = walker.nextNode())) {
@@ -234,12 +244,11 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
       charOffset += (n as Text).textContent?.length || 0;
     }
     return { charOffset, charLength: text.length };
-  }, []);
+  }, [getShadowBody]);
 
   const handleHighlightSelection = useCallback(async () => {
     if (!selectionMenu) return;
-    const frame = iframeRef.current;
-    const selection = frame?.contentWindow?.getSelection();
+    const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
 
     const range = selection.getRangeAt(0);
@@ -292,47 +301,41 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   }, [selectionMenu, setShowSearch]);
 
   useEffect(() => {
-    const frame = iframeRef.current;
-    if (!frame || !ready) return;
-    const currentDoc = frame.contentDocument;
+    const body = chapterBodyRef.current;
+    if (!body || !ready) return;
+    const shadow = body.getRootNode() as ShadowRoot;
     const onMouseUp = () => {
-      const win = frame.contentWindow;
-      const selection = win?.getSelection();
+      const selection = window.getSelection();
       const text = selection?.toString().trim();
       if (!text || text.length > 200) { setSelectionMenu(null); return; }
       const range = selection!.getRangeAt(0);
       const rect = range.getBoundingClientRect();
-      const frameRect = frame.getBoundingClientRect();
-      setSelectionMenu({ x: rect.left + rect.width / 2 + frameRect.left, y: rect.top + frameRect.top, text });
+      setSelectionMenu({ x: rect.left + rect.width / 2, y: rect.top, text });
     };
     const onMouseDown = () => {
       if (dictionaryQuery) setDictionaryQuery(null);
       setSelectionMenu(null);
     };
-    const onLoad = () => {
-      const doc = frame.contentDocument;
-      if (!doc) return;
-      doc.addEventListener("mouseup", onMouseUp);
-      doc.addEventListener("mousedown", onMouseDown);
-      applyHighlightsToIframe();
-      applySearchHighlightsToIframe();
-    };
-    frame.addEventListener("load", onLoad);
-    if (currentDoc) {
-      currentDoc.addEventListener("mouseup", onMouseUp);
-      currentDoc.addEventListener("mousedown", onMouseDown);
-      applyHighlightsToIframe();
-      applySearchHighlightsToIframe();
-    }
-    return () => {
-      frame.removeEventListener("load", onLoad);
-      if (frame.contentDocument) {
-        frame.contentDocument.removeEventListener("mouseup", onMouseUp);
-        frame.contentDocument.removeEventListener("mousedown", onMouseDown);
-      } else if (currentDoc) {
-        currentDoc.removeEventListener("mouseup", onMouseUp);
-        currentDoc.removeEventListener("mousedown", onMouseDown);
+    const onLinkClick = (e: MouseEvent) => {
+      const anchor = (e.target as HTMLElement).closest("a");
+      if (!anchor || !anchor.getAttribute("href")) return;
+      const href = anchor.getAttribute("href")!;
+      if (href.startsWith("#")) {
+        const targetId = href.slice(1);
+        const target = shadow.getElementById(targetId) || body.querySelector(`#${targetId}`);
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       }
+      e.preventDefault();
+    };
+    shadow.addEventListener("mouseup", onMouseUp);
+    shadow.addEventListener("mousedown", onMouseDown);
+    shadow.addEventListener("click", onLinkClick);
+    applyHighlightsToIframe();
+    applySearchHighlightsToIframe();
+    return () => {
+      shadow.removeEventListener("mouseup", onMouseUp);
+      shadow.removeEventListener("mousedown", onMouseDown);
+      shadow.removeEventListener("click", onLinkClick);
     };
   }, [ready, spineIndex, dictionaryQuery, applyHighlightsToIframe, applySearchHighlightsToIframe]);
 
@@ -409,16 +412,22 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     setChapterLoading(true);
     setChapterError(null);
 
-    processChapter(item.href, settings.theme, settings.fontSize, settings.fontFamily)
-      .then((html) => {
-        if (cancelled || !iframeRef.current) return;
-        iframeRef.current.srcdoc = html;
+    processChapterBody(item.href, settings.theme, settings.fontSize, settings.fontFamily)
+      .then(({ styles, bodyHTML }) => {
+        if (cancelled || !shadowHostRef.current) return;
+        const host = shadowHostRef.current;
+        let shadow = host.shadowRoot;
+        if (!shadow) shadow = host.attachShadow({ mode: "open" });
+        shadow.innerHTML = `<style>${styles}</style><body>${bodyHTML}</body>`;
+        const body = shadow.querySelector("body") as HTMLElement;
+        chapterBodyRef.current = body;
+
         setChapterLoading(false);
         const match = flatToc(parsedEpub.toc).find((t) => t.href === item.href);
         setActiveTocId(match?.id ?? null);
 
-        if (settings.paginationMode && iframeRef.current) {
-          applyPagination(iframeRef.current, iframeRef.current.clientWidth, iframeRef.current.clientHeight);
+        if (settings.paginationMode && body) {
+          applyPagination(body, host.clientWidth, host.clientHeight);
         }
       })
       .catch((err: unknown) => {
@@ -429,21 +438,49 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
         }
       });
     return () => { cancelled = true; };
-  }, [ready, spineIndex, settings.theme, settings.fontSize, settings.fontFamily, parsedEpub, processChapter, settings.paginationMode, applyPagination]);
+  }, [ready, spineIndex, settings.theme, settings.fontSize, settings.fontFamily, parsedEpub, processChapterBody, settings.paginationMode, applyPagination]);
 
   useEffect(() => {
-    if (!ready || !iframeRef.current) return;
+    const body = chapterBodyRef.current;
+    if (!ready || !body) return;
     if (settings.paginationMode) {
-      applyPagination(iframeRef.current, iframeRef.current.clientWidth, iframeRef.current.clientHeight);
+      applyPagination(body, body.parentElement?.clientWidth ?? body.clientWidth, body.clientHeight);
     } else {
-      removePagination(iframeRef.current);
+      removePagination(body);
     }
   }, [settings.paginationMode, ready, applyPagination, removePagination]);
 
+  const globalPage = useMemo(() => {
+    let cumulative = 0;
+    for (let i = 0; i < spineIndex; i++) {
+      cumulative += chapterPages[i] || 0;
+    }
+    return cumulative + chapterPage;
+  }, [spineIndex, chapterPage, chapterPages]);
+
+  const totalBookPages = useMemo(() => {
+    const knownTotal = Object.values(chapterPages).reduce((a, b) => a + b, 0);
+    const knownCount = Object.keys(chapterPages).length;
+    if (knownCount === 0) return 0;
+    const avg = knownTotal / knownCount;
+    return Math.round(knownTotal + avg * (total - knownCount));
+  }, [chapterPages, total]);
+
+  useEffect(() => {
+    if (settings.paginationMode && chapterTotal > 0 && !chapterLoading && ready) {
+      setChapterPages(prev => {
+        if (prev[spineIndex] === chapterTotal) return prev;
+        return { ...prev, [spineIndex]: chapterTotal };
+      });
+    }
+  }, [chapterTotal, settings.paginationMode, chapterLoading, ready, spineIndex]);
+
   useEffect(() => {
     const handleResize = () => {
-      if (settings.paginationMode && iframeRef.current) {
-        recalculate(iframeRef.current, iframeRef.current.clientWidth);
+      const body = chapterBodyRef.current;
+      const hostWidth = shadowHostRef.current?.clientWidth;
+      if (settings.paginationMode && body && hostWidth) {
+        recalculate(body, hostWidth);
       }
     };
     window.addEventListener("resize", handleResize);
@@ -503,19 +540,118 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
     }
   }, [navIndex, navHistory, setNavIndex, setSpineIndex]);
 
-  const goNext = useCallback(() => {
-    if (settings.paginationMode) {
-      if (nextChapterPage()) return;
+  const scrollPage = useCallback((dir: 1 | -1) => {
+    const host = shadowHostRef.current;
+    if (!host) return false;
+    const vh = host.clientHeight;
+    const maxScroll = Math.max(0, host.scrollHeight - vh);
+    const target = host.scrollTop + dir * vh;
+    if (dir > 0 && target < maxScroll - 2) {
+      host.scrollTo({ top: target, behavior: "smooth" });
+      return true;
     }
-    navigateToChapter(spineIndex + 1);
-  }, [navigateToChapter, spineIndex, settings.paginationMode, nextChapterPage]);
+    if (dir < 0 && target > 2) {
+      host.scrollTo({ top: target, behavior: "smooth" });
+      return true;
+    }
+    return false;
+  }, []);
+
+  const goNext = useCallback(() => {
+    if (turnLockRef.current) return;
+    turnLockRef.current = true;
+    setPageTurnDir("forward");
+
+    if (!settings.paginationMode) {
+      if (scrollPage(1)) { turnLockRef.current = false; setPageTurnDir(null); return; }
+      setTimeout(() => {
+        navigateToChapter(spineIndex + 1);
+        setTimeout(() => {
+          setPageTurnDir(null);
+          turnLockRef.current = false;
+          pageTurnRef.current = false;
+        }, 500);
+      }, 20);
+      return;
+    }
+
+    const host = shadowHostRef.current;
+    const body = chapterBodyRef.current;
+    if (!host || !body) { turnLockRef.current = false; setPageTurnDir(null); return; }
+
+    const vw = host.clientWidth;
+    const vh = host.clientHeight;
+
+    requestAnimationFrame(async () => {
+      const front = await captureArea(host, 0, 0, vw, vh);
+      body.style.transform = `translateX(${-vw}px)`;
+      await new Promise((r) => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(r));
+      const back = await captureArea(host, 0, 0, vw, vh);
+      body.style.transform = "";
+
+      const withinChapter = nextChapterPage();
+      if (!withinChapter) navigateToChapter(spineIndex + 1);
+      requestAnimationFrame(() => {
+        setPageTurnDir(null);
+        curlStart(front, back, "forward").then(() => {
+          turnLockRef.current = false;
+          pageTurnRef.current = false;
+        });
+      });
+    });
+  }, [navigateToChapter, spineIndex, settings.paginationMode, nextChapterPage, scrollPage, curlStart]);
 
   const goPrev = useCallback(() => {
-    if (settings.paginationMode) {
-      if (prevChapterPage()) return;
+    if (turnLockRef.current) return;
+    turnLockRef.current = true;
+    setPageTurnDir("backward");
+
+    if (!settings.paginationMode) {
+      if (scrollPage(-1)) { turnLockRef.current = false; setPageTurnDir(null); return; }
+      setTimeout(() => {
+        navigateToChapter(spineIndex - 1);
+        setTimeout(() => {
+          setPageTurnDir(null);
+          turnLockRef.current = false;
+          pageTurnRef.current = false;
+        }, 500);
+      }, 20);
+      return;
     }
-    navigateToChapter(spineIndex - 1);
-  }, [navigateToChapter, spineIndex, settings.paginationMode, prevChapterPage]);
+
+    const host = shadowHostRef.current;
+    const body = chapterBodyRef.current;
+    if (!host || !body) { turnLockRef.current = false; setPageTurnDir(null); return; }
+
+    const vw = host.clientWidth;
+    const vh = host.clientHeight;
+
+    requestAnimationFrame(async () => {
+      const front = await captureArea(host, 0, 0, vw, vh);
+      body.style.transform = `translateX(${vw}px)`;
+      await new Promise((r) => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(r));
+      const back = await captureArea(host, 0, 0, vw, vh);
+      body.style.transform = "";
+
+      const withinChapter = prevChapterPage();
+      if (!withinChapter) navigateToChapter(spineIndex - 1);
+      requestAnimationFrame(() => {
+        setPageTurnDir(null);
+        curlStart(front, back, "backward").then(() => {
+          turnLockRef.current = false;
+          pageTurnRef.current = false;
+        });
+      });
+    });
+  }, [navigateToChapter, spineIndex, settings.paginationMode, prevChapterPage, scrollPage, curlStart]);
+
+  const handlePageTurnEnd = useCallback(() => {
+    setPageTurnDir(null);
+    pageTurnRef.current = false;
+    turnLockRef.current = false;
+  }, []);
 
   const handleSearch = useCallback((query: string) => {
     setSearchQuery(query);
@@ -589,16 +725,14 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
   }, [hasUnsavedChanges, onBack, saveSettings, file.id]);
 
   const statusProgress = useMemo(() => {
-    if (settings.paginationMode) {
-      return `Chapter ${spineIndex + 1} • Page ${chapterPage} of ${chapterTotal}`;
+    if (settings.paginationMode && totalBookPages > 0) {
+      return `${globalPage} / ${totalBookPages}`;
     }
-    if (activeTocId) {
-      const flat = flatToc(toc);
-      const found = flat.find((t) => t.id === activeTocId);
-      return found?.label || `Chapter ${spineIndex + 1} of ${total}`;
+    if (ready) {
+      return `${spineIndex + 1} / ${total}`;
     }
-    return ready ? `Chapter ${spineIndex + 1} of ${total}` : "Reading…";
-  }, [settings.paginationMode, spineIndex, chapterPage, chapterTotal, activeTocId, toc, ready, total]);
+    return "Reading…";
+  }, [settings.paginationMode, globalPage, totalBookPages, ready, spineIndex, total]);
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -714,21 +848,34 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
           </aside>
         )}
 
-        <div className="relative flex-1 min-h-0 overflow-hidden" style={{ background: themes[settings.theme].bg }}>
-          <iframe
-            ref={iframeRef}
-            className="w-full h-full border-0 transition-opacity duration-300"
-            style={{ display: ready ? "block" : "none", opacity: chapterLoading ? 0.3 : 1 }}
-            sandbox="allow-same-origin"
-            title="Book content"
+        <div className={`epub-content-area ${pageTurnDir ? `page-turn-${pageTurnDir}` : ""}`} style={{ background: themes[settings.theme].bg }}>
+          <div className="epub-progress-bar">
+            <div className="epub-progress-bar-fill" style={{ width: `${ready ? Math.round((spineIndex / Math.max(total - 1, 1)) * 100) : 0}%` }} />
+          </div>
+
+          <PageCurlCanvas
+            show={curlShow3D}
+            frontCanvas={frontCanvas}
+            backCanvas={backCanvas}
+            width={shadowHostRef.current?.clientWidth ?? 800}
+            height={shadowHostRef.current?.clientHeight ?? 600}
+            direction={curlDirection}
+            onAnimationEnd={curlOnEnd}
+          />
+
+          {pageTurnDir && !curlShow3D && (
+            <div className="page-turn-cover" onAnimationEnd={handlePageTurnEnd} />
+          )}
+
+          <div
+            ref={shadowHostRef}
+            className={`epub-iframe${!settings.paginationMode ? " epub-iframe-scroll" : ""}`}
+            style={{ display: ready ? "block" : "none", opacity: chapterLoading ? 0.25 : 1 }}
           />
 
           {chapterLoading && ready && (
-            <div className="absolute inset-0 z-10 pointer-events-none flex items-center justify-center">
-              <div className="flex flex-col items-center gap-3">
-                <div className="h-8 w-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-                <span className="text-xs text-muted-foreground font-mono">Loading chapter…</span>
-              </div>
+            <div className="epub-loading-overlay">
+              <div className="epub-loading-spinner" />
             </div>
           )}
 
@@ -779,18 +926,18 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
               <button
                 onClick={goPrev}
                 disabled={spineIndex === 0 && !settings.paginationMode}
-                className="absolute left-2 top-1/2 -translate-y-1/2 z-20 h-10 w-10 rounded-full glass-surface border border-border/60 flex items-center justify-center text-foreground/50 hover:text-foreground hover:border-primary/40 hover:shadow-lg transition-all duration-200 disabled:opacity-20 disabled:cursor-not-allowed group"
+                className="epub-nav-btn epub-nav-btn-prev"
                 title="Previous (←)"
               >
-                <ChevronLeft className="h-5 w-5 transition-transform group-hover:-translate-x-0.5" />
+                <ChevronLeft className="transition-transform" />
               </button>
               <button
                 onClick={goNext}
                 disabled={spineIndex >= total - 1 && !settings.paginationMode}
-                className="absolute right-2 top-1/2 -translate-y-1/2 z-20 h-10 w-10 rounded-full glass-surface border border-border/60 flex items-center justify-center text-foreground/50 hover:text-foreground hover:border-primary/40 hover:shadow-lg transition-all duration-200 disabled:opacity-20 disabled:cursor-not-allowed group"
+                className="epub-nav-btn epub-nav-btn-next"
                 title="Next (→)"
               >
-                <ChevronRight className="h-5 w-5 transition-transform group-hover:translate-x-0.5" />
+                <ChevronRight className="transition-transform" />
               </button>
             </>
           )}
@@ -830,29 +977,21 @@ export function EpubViewer({ file, onBack }: EpubViewerProps) {
 
       {selectionMenu && (
         <div
-          className="fixed z-50 flex items-center rounded-xl glass-surface border border-border/70 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+          className="epub-selection-menu animate-in fade-in zoom-in-95 duration-150"
           style={{ left: selectionMenu.x, top: selectionMenu.y, transform: "translate(-50%, calc(-100% - 10px))" }}
         >
-          <button onClick={handleCopySelection} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
-            <Copy className="h-3 w-3" /> Copy
-          </button>
-          <span className="w-px h-4 bg-border/60 shrink-0" />
-          <button onClick={() => handleDefine(selectionMenu.text, selectionMenu.x, selectionMenu.y)} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
-            <Book className="h-3 w-3" /> Define
-          </button>
-          <span className="w-px h-4 bg-border/60 shrink-0" />
-          <button onClick={handleHighlightSelection} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
-            <span className="w-3 h-3 rounded-sm border border-white/10" style={{ backgroundColor: highlightColor }} />
+          <button onClick={handleCopySelection}><Copy /> Copy</button>
+          <span className="menu-divider" />
+          <button onClick={() => handleDefine(selectionMenu.text, selectionMenu.x, selectionMenu.y)}><Book /> Define</button>
+          <span className="menu-divider" />
+          <button onClick={handleHighlightSelection}>
+            <span className="w-3 h-3 rounded-sm border border-white/10 shrink-0" style={{ backgroundColor: highlightColor, display: "inline-block" }} />
             Highlight
           </button>
-          <span className="w-px h-4 bg-border/60 shrink-0" />
-          <button onClick={handleSearchFromSelection} className="flex items-center gap-1.5 px-3 py-2 text-xs text-foreground/80 hover:text-foreground hover:bg-white/5 transition-colors">
-            <Search className="h-3 w-3" /> Search
-          </button>
-          <span className="w-px h-4 bg-border/60 shrink-0" />
-          <button onClick={handleBookmarkChapter} className="flex items-center gap-1.5 px-3 py-2 text-xs text-primary/80 hover:text-primary hover:bg-primary/5 transition-colors">
-            <BookmarkIcon className="h-3 w-3" /> Bookmark
-          </button>
+          <span className="menu-divider" />
+          <button onClick={handleSearchFromSelection}><Search /> Search</button>
+          <span className="menu-divider" />
+          <button onClick={handleBookmarkChapter}><BookmarkIcon /> Bookmark</button>
         </div>
       )}
 

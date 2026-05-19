@@ -48,7 +48,7 @@ const DEFAULT_SETTINGS: EpubSettings = {
   margin: 40,
   theme: "light",
   isTwoPage: false,
-  paginationMode: false,
+  paginationMode: true,
 };
 
 export const useEpubStore = create<EpubState>((set, get) => ({

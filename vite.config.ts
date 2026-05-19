@@ -43,6 +43,15 @@ export default defineConfig(({ mode }) => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ['three'],
+        },
+      },
+    },
+  },
   // epubjs is no longer used. JSZip is a proper ESM-compatible package
   // and needs no special treatment here.
 }));

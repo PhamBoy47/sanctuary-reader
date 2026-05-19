@@ -6,41 +6,38 @@ interface UseEpubPaginationReturn {
   nextPage: () => boolean;
   prevPage: () => boolean;
   goToPage: (page: number) => void;
-  applyPagination: (iframe: HTMLIFrameElement, viewportWidth: number, viewportHeight: number) => void;
-  removePagination: (iframe: HTMLIFrameElement) => void;
-  recalculate: (iframe: HTMLIFrameElement, viewportWidth: number) => void;
+  applyPagination: (container: HTMLElement, viewportWidth: number, viewportHeight: number) => void;
+  removePagination: (container: HTMLElement) => void;
+  recalculate: (container: HTMLElement, viewportWidth: number) => void;
 }
 
 const PAGINATION_STYLE_ID = "sanctuary-pagination-style";
 const GAP = 40;
 
-export function useEpubPagination(iframeRef: React.RefObject<HTMLIFrameElement | null>): UseEpubPaginationReturn {
+export function useEpubPagination(): UseEpubPaginationReturn {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const columnWidthRef = useRef(0);
-  const docRef = useRef<Document | null>(null);
+  const containerRef = useRef<HTMLElement | null>(null);
 
-  const applyPagination = useCallback((iframe: HTMLIFrameElement, viewportWidth: number, viewportHeight: number) => {
-    const doc = iframe.contentDocument;
-    if (!doc?.body) return;
+  const applyPagination = useCallback((container: HTMLElement, viewportWidth: number, viewportHeight: number) => {
+    containerRef.current = container;
 
-    doc.getElementById(PAGINATION_STYLE_ID)?.remove();
-    docRef.current = doc;
+    const root = container.getRootNode() as ShadowRoot | Document;
+    root.getElementById(PAGINATION_STYLE_ID)?.remove();
 
     const colWidth = viewportWidth - GAP * 2;
     columnWidthRef.current = viewportWidth;
 
-    const style = doc.createElement("style");
+    const style = document.createElement("style");
     style.id = PAGINATION_STYLE_ID;
     style.textContent = `
-      html, body {
+      body {
         margin: 0 !important;
         padding: 0 ${GAP}px !important;
         overflow: hidden !important;
         height: ${viewportHeight}px !important;
         max-height: ${viewportHeight}px !important;
-      }
-      body {
         column-width: ${colWidth}px !important;
         column-gap: ${GAP * 2}px !important;
         column-fill: auto !important;
@@ -53,36 +50,31 @@ export function useEpubPagination(iframeRef: React.RefObject<HTMLIFrameElement |
         break-inside: avoid !important;
       }
     `;
-    doc.head.appendChild(style);
+    root.appendChild(style);
 
-    doc.body.style.transform = "translateX(0)";
+    container.style.transform = "translateX(0)";
     setCurrentPage(1);
 
     requestAnimationFrame(() => {
-      const scrollW = doc.body.scrollWidth;
+      const scrollW = container.scrollWidth;
       const pages = Math.max(1, Math.ceil(scrollW / viewportWidth));
       setTotalPages(pages);
     });
   }, []);
 
-  const removePagination = useCallback((iframe: HTMLIFrameElement) => {
-    const doc = iframe.contentDocument;
-    if (!doc) return;
-    doc.getElementById(PAGINATION_STYLE_ID)?.remove();
-    if (doc.body) {
-      doc.body.style.transform = "";
-    }
-    docRef.current = null;
+  const removePagination = useCallback((container: HTMLElement) => {
+    const root = container.getRootNode() as ShadowRoot | Document;
+    root.getElementById(PAGINATION_STYLE_ID)?.remove();
+    container.style.transform = "";
+    containerRef.current = null;
     setCurrentPage(1);
     setTotalPages(1);
   }, []);
 
-  const recalculate = useCallback((iframe: HTMLIFrameElement, viewportWidth: number) => {
-    const doc = iframe.contentDocument;
-    if (!doc?.body) return;
+  const recalculate = useCallback((container: HTMLElement, viewportWidth: number) => {
     columnWidthRef.current = viewportWidth;
     requestAnimationFrame(() => {
-      const scrollW = doc.body.scrollWidth;
+      const scrollW = container.scrollWidth;
       const pages = Math.max(1, Math.ceil(scrollW / viewportWidth));
       setTotalPages(pages);
       setCurrentPage((c) => Math.min(c, pages));
@@ -97,10 +89,10 @@ export function useEpubPagination(iframeRef: React.RefObject<HTMLIFrameElement |
   }, [totalPages]);
 
   const applyTransform = useCallback((page: number) => {
-    const doc = docRef.current;
-    if (!doc?.body) return;
+    const container = containerRef.current;
+    if (!container) return;
     const offset = -(page - 1) * columnWidthRef.current;
-    doc.body.style.transform = `translateX(${offset}px)`;
+    container.style.transform = `translateX(${offset}px)`;
   }, []);
 
   useEffect(() => {
